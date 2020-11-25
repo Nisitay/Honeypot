@@ -43,11 +43,11 @@ class HTTPRouter():
         while True:
             packet = self.w.recv()
 
-            if len(self.get_packet_payload(packet)) > 0 and packet.tcp.ack:
+            if len(packet.payload) > 0 and packet.tcp.ack:
                 ack = scapy.IP(src=ASSET_IP, dst=packet.ipv4.src_addr)\
                     / scapy.TCP(sport=FAKE_ASSET_PORT, dport=packet.tcp.src_port, flags="A",
                                 seq=packet.tcp.ack_num,
-                                ack=packet.tcp.seq_num + len(self.get_packet_payload(packet)))
+                                ack=packet.tcp.seq_num + len(packet.payload))
                 scapy.send(ack, verbose=0)
                 self.requests_to_handle.append(packet)
             
@@ -79,33 +79,33 @@ class HTTPRouter():
     def requests_handler(self):
         while True:
             if self.requests_to_handle:
-                first_packet = self.requests_to_handle.pop(0)
-                request = HTTPRequest(first_packet.payload)  # Parse the HTTP request headers
+                packet = self.requests_to_handle.pop(0)
+                request = HTTPRequest(packet.payload)  # Parse the HTTP request headers
                 content_length = (int(request.headers.get("Content-Length", 0))
                                   if hasattr(request, "headers") else 0)
 
-                full_payload = self.get_packet_payload(first_packet)
+                full_payload = packet.payload
                 content_match = self.get_http_content(full_payload)
                 while not content_match or len(content_match.group("content")) < content_length:
                     while True:
                         if self.requests_to_handle: break
-                    packet = self.requests_to_handle.pop(0)
-                    full_payload += self.get_packet_payload(packet)
+                    content_packet = self.requests_to_handle.pop(0)
+                    full_payload += content_packet.payload
                     content_match = self.get_http_content(full_payload)
 
-                if self.valid_payload(full_payload) and first_packet.ipv4.src_addr not in self.blacklist:
-                    self.send_response(first_packet, full_payload)
+                if self.valid_payload(full_payload) and packet.ipv4.src_addr not in self.blacklist:
+                    self.send_response(packet, full_payload)
                 else:
-                    if first_packet.ipv4.src_addr not in self.blacklist:
-                        self.blacklist.add_address(first_packet.ipv4.src_addr)
-                    self.send_response(first_packet, full_payload, from_honeypot=True)
+                    if packet.ipv4.src_addr not in self.blacklist:
+                        self.blacklist.add_address(packet.ipv4.src_addr)
+                    self.send_response(packet, full_payload, from_honeypot=True)
 
     
     def send_response(self, packet, payload, from_honeypot=False):
-        full_payload = self.get_server_response(payload, from_honeypot)
+        response = self.get_server_response(payload, from_honeypot)
         next_seq = packet.tcp.ack_num
         next_ack = packet.tcp.seq_num + len(payload)
-        payloads = self.split_payload(full_payload)
+        payloads = self.split_payload(response)
 
         for p in payloads:
             response_packet = scapy.IP(src=ASSET_IP, dst=packet.ipv4.src_addr)\
@@ -122,7 +122,7 @@ class HTTPRouter():
         and returns the HTTP response.
 
         Args:
-            http_request (str):
+            http_request (bytes):
             honeypot (bool): Determines if the response
             should be returned from the honeypot.
 
@@ -132,7 +132,7 @@ class HTTPRouter():
         addr = (HONEYPOT_IP, HONEYPOT_PORT) if honeypot else (ASSET_IP, ASSET_PORT)
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.connect(addr)
-        server.send(http_request.encode("utf-8"))
+        server.send(http_request)
         http_response = b""
 
         while True:
@@ -143,57 +143,44 @@ class HTTPRouter():
         return http_response
 
         
-    def valid_payload(self, full_payload):
+    def valid_payload(self, payload):
         """
-        Receives a full HTTP payload as string,
+        Receives a HTTP payload as bytes,
         and checks it for SQL injection
 
         Args:
-            full_payload (str): Full HTTP payload, as string
+            payload (bytes): HTTP payload, as bytes
 
         Returns:
             bool: Returns whether the payload is valid or not
         """
-        pattern = r"email=(?P<email>.*)&password=(?P<password>.*)&submit=Log\+In"
-        login_match = re.search(pattern, full_payload)
+        pattern = b"email=(?P<email>.*)&password=(?P<password>.*)&submit=Log\+In"
+        login_match = re.search(pattern, payload)
         if not login_match: return True  # If no credentials, valid payload
 
-        credentials = (urllib.parse.unquote(login_match.group("email")),
-                       urllib.parse.unquote(login_match.group("password")))
-        forbidden_chars = ['"', "'"]
+        credentials = (login_match.group("email"),
+                       login_match.group("password"))
+        forbidden_chars = [urllib.parse.quote(b'"').encode("utf-8"),
+                           urllib.parse.quote(b"'").encode("utf-8")]
         if any(char in cred for cred in credentials for char in forbidden_chars):
             return False
         return True
 
-    def split_payload(self, full_payload):
+    def split_payload(self, payload):
         """
-        Receives a full HTTP payload (headers + content),
-        splits it to a list of payloads, each with 
-        maximum length that scapy can send.
+        Receives a payload, splits it to a list of payloads,
+        each with maximum length that scapy can send.
 
         Args:
-            full_payload (bytes): TCP payload - HTTP response
+            payload (bytes): TCP payload
 
         Returns:
             list: List of payloads
         """
         max_payload_length = 1000  # Max checked is 1460
-        payloads = [full_payload[i:i+max_payload_length]
-                     for i in range(0, len(full_payload), max_payload_length)]
+        payloads = [payload[i:i+max_payload_length]
+                     for i in range(0, len(payload), max_payload_length)]
         return payloads
-
-    def get_packet_payload(self, packet):
-        """
-        Returns the packets' payload in string.
-
-        Args:
-            packet (pydivert packet): packet.payload is bytes
-
-        Returns:
-            str: The packet payload, in string
-        """
-        bytes_payload = packet.payload
-        return bytes_payload.decode("utf-8")
 
     def get_http_content(self, payload):
         """
@@ -201,17 +188,14 @@ class HTTPRouter():
         HTTP request
 
         Args:
-            payload (str): TCP payload - HTTP request
+            payload (bytes): TCP payload - HTTP request
 
         Returns:
             re.Match: Returns the match or none if not found
         """
-        pattern = r"\r\n\r\n(?P<content>(.|\s)*)"
+        pattern = b"\r\n\r\n(?P<content>(.|\s)*)"
         content_match = re.search(pattern, payload)
         return content_match
-
-    def re_inject(self, packet):
-        self.w.send(packet)
 
 
 if __name__ == "__main__":
