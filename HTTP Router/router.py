@@ -25,21 +25,22 @@ class HTTPRouter():
         self.w = pydivert.WinDivert(WINDIVERT_FILTER)
         self.blacklist = Blacklist()
         self.requests_to_handle = []
+        self.syns = {}
         self.handlers = [
             Thread(target=self.requests_handler, args=()),
             Thread(target=self.handle_packets, args=())
         ]
- 
+
     def start(self):
         self.w.open()
         for handler in self.handlers:
             handler.start()
-        
+
     def stop(self):
         self.w.close()
 
     def handle_packets(self):
-        print ("Handling packets...")
+        print("Handling packets...")
         while True:
             packet = self.w.recv()
 
@@ -50,15 +51,15 @@ class HTTPRouter():
                                 ack=packet.tcp.seq_num + len(packet.payload))
                 scapy.send(ack, verbose=0)
                 self.requests_to_handle.append(packet)
-            
+
             elif packet.tcp.syn:
-                # TODO: Handle DOS attacks
+                self.syns[packet.ipv4.src_addr] = self.syns.get(packet.ipv4.src_addr, 0) + 1
                 syn_ack = scapy.IP(src=ASSET_IP, dst=packet.ipv4.src_addr)\
                         / scapy.TCP(sport=FAKE_ASSET_PORT, dport=packet.tcp.src_port, flags="SA",
                                     seq=random.randint(0, MAX_SEQUENCE_NUM),
                                     ack=packet.tcp.seq_num + 1)
                 scapy.send(syn_ack, verbose=0)
-            
+
             elif packet.tcp.fin:
                 fin_ack = scapy.IP(src=ASSET_IP, dst=packet.ipv4.src_addr)\
                         / scapy.TCP(sport=FAKE_ASSET_PORT, dport=packet.tcp.src_port, flags="FA",
@@ -70,12 +71,14 @@ class HTTPRouter():
                                 seq=packet.tcp.ack_num + 1,
                                 ack=packet.tcp.seq_num + 1)
                 scapy.send(ack, verbose=0)
-            
-            else:  # ACK
-                # TODO: Reset DOS detection on ack
-                pass
 
-        
+            else:  # ACK
+                self.syns.pop(packet.ipv4.src_addr, None)
+
+            if self.syns.get(packet.ipv4.src_addr, 0) >= 10:
+                self.syns.pop(packet.ipv4.src_addr, None)
+                print(f"DOS attack (SYN flood) detected from {packet.ipv4.src_addr}")
+
     def requests_handler(self):
         while True:
             if self.requests_to_handle:
@@ -100,7 +103,6 @@ class HTTPRouter():
                         self.blacklist.add_address(packet.ipv4.src_addr)
                     self.send_response(packet, full_payload, from_honeypot=True)
 
-    
     def send_response(self, packet, payload, from_honeypot=False):
         response = self.get_server_response(payload, from_honeypot)
         next_seq = packet.tcp.ack_num
@@ -109,8 +111,8 @@ class HTTPRouter():
 
         for p in payloads:
             response_packet = scapy.IP(src=ASSET_IP, dst=packet.ipv4.src_addr)\
-                            / scapy.TCP(sport=FAKE_ASSET_PORT, dport=packet.tcp.src_port, flags="PA", 
-                                        seq=next_seq, 
+                            / scapy.TCP(sport=FAKE_ASSET_PORT, dport=packet.tcp.src_port, flags="PA",
+                                        seq=next_seq,
                                         ack=next_ack)\
                             / scapy.Raw(p)
             scapy.send(response_packet, verbose=0)
@@ -142,7 +144,6 @@ class HTTPRouter():
         server.close()
         return http_response
 
-        
     def valid_payload(self, payload):
         """
         Receives a HTTP payload as bytes,
@@ -179,7 +180,7 @@ class HTTPRouter():
         """
         max_payload_length = 1000  # Max checked is 1460
         payloads = [payload[i:i+max_payload_length]
-                     for i in range(0, len(payload), max_payload_length)]
+                    for i in range(0, len(payload), max_payload_length)]
         return payloads
 
     def get_http_content(self, payload):
