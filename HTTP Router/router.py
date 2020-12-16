@@ -7,6 +7,7 @@ import re
 from threading import Thread
 from blacklist import Blacklist
 from http_request import HTTPRequest
+from utils import fingerprint
 
 
 ASSET_IP = "10.0.0.10"
@@ -96,7 +97,7 @@ class HTTPRouter():
                     full_payload += content_packet.payload
                     content_match = self.get_http_content(full_payload)
 
-                if self.valid_payload(full_payload) and packet.ipv4.src_addr not in self.blacklist:
+                if self.valid_payload(full_payload):
                     self.send_response(packet, full_payload)
                 else:
                     if packet.ipv4.src_addr not in self.blacklist:
@@ -104,19 +105,29 @@ class HTTPRouter():
                     self.send_response(packet, full_payload, from_honeypot=True)
 
     def send_response(self, packet, payload, from_honeypot=False):
+        """
+        Gets a HTTP response from the server/honeypot, and sends it
+        to the client.
+
+        Args:
+            packet (pydivert packet): First packet of the HTTP request
+            payload (bytes): Full HTTP request
+            from_honeypot (bool, optional): Determines if the response should
+            be returned from the honeypot. Defaults to False.
+        """
         response = self.get_server_response(payload, from_honeypot)
-        next_seq = packet.tcp.ack_num
-        next_ack = packet.tcp.seq_num + len(payload)
+        seq_num = packet.tcp.ack_num
+        ack_num = packet.tcp.seq_num + len(payload)
         payloads = self.split_payload(response)
 
         for p in payloads:
             response_packet = scapy.IP(src=ASSET_IP, dst=packet.ipv4.src_addr)\
                             / scapy.TCP(sport=FAKE_ASSET_PORT, dport=packet.tcp.src_port, flags="PA",
-                                        seq=next_seq,
-                                        ack=next_ack)\
+                                        seq=seq_num,
+                                        ack=ack_num)\
                             / scapy.Raw(p)
             scapy.send(response_packet, verbose=0)
-            next_seq += len(p)
+            seq_num += len(p)
 
     def get_server_response(self, http_request, honeypot):
         """
@@ -161,8 +172,8 @@ class HTTPRouter():
 
         credentials = (login_match.group("email"),
                        login_match.group("password"))
-        forbidden_chars = [urllib.parse.quote(b'"').encode("utf-8"),
-                           urllib.parse.quote(b"'").encode("utf-8")]
+        forbidden_chars = (urllib.parse.quote(b'"').encode("utf-8"),
+                           urllib.parse.quote(b"'").encode("utf-8"))
         if any(char in cred for cred in credentials for char in forbidden_chars):
             return False
         return True
