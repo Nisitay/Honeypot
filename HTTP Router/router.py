@@ -1,4 +1,5 @@
 import scapy.all as scapy
+import logging
 import pydivert
 import random
 import urllib
@@ -7,7 +8,7 @@ import re
 from threading import Thread
 from blacklist import Blacklist
 from http_request import HTTPRequest
-from utils import fingerprint
+from database import database
 
 
 ASSET_IP = "10.0.0.10"
@@ -18,6 +19,7 @@ HONEYPOT_IP = "10.0.0.18"
 HONEYPOT_PORT = 8080
 
 WINDIVERT_FILTER = f"tcp.DstPort == {FAKE_ASSET_PORT} and inbound"
+LOG_PATH = "app.log"
 MAX_SEQUENCE_NUM = 4294967295
 
 
@@ -26,11 +28,14 @@ class HTTPRouter():
         self.w = pydivert.WinDivert(WINDIVERT_FILTER)
         self.blacklist = Blacklist()
         self.requests_to_handle = []
+        self.logged_into_asset = []
+        self.logged_into_hp = []
         self.syns = {}
         self.handlers = [
             Thread(target=self.requests_handler, args=()),
             Thread(target=self.handle_packets, args=())
         ]
+        self.initialize_logger()
 
     def start(self):
         self.w.open()
@@ -39,9 +44,14 @@ class HTTPRouter():
 
     def stop(self):
         self.w.close()
+        self.logger.info("HTTP router has stopped")
 
     def handle_packets(self):
-        print("Handling packets...")
+        """
+        Handles the syn/fin/ack packets, sends packets with a payload
+        to the corresponding function, and detects DOS attacks
+        """
+        self.logger.info("HTTP router has started. Handling packets...")
         while True:
             packet = self.w.recv()
 
@@ -78,9 +88,13 @@ class HTTPRouter():
 
             if self.syns.get(packet.ipv4.src_addr, 0) >= 10:
                 self.syns.pop(packet.ipv4.src_addr, None)
-                print(f"DOS attack (SYN flood) detected from {packet.ipv4.src_addr}")
+                self.logger.warning(f"DOS attack (SYN flood) detected from {packet.ipv4.src_addr}")
 
     def requests_handler(self):
+        """
+        Handles incoming HTTP requests, and sends them to
+        the honeypot/asset according to the contents of the request
+        """
         while True:
             if self.requests_to_handle:
                 packet = self.requests_to_handle.pop(0)
@@ -97,12 +111,33 @@ class HTTPRouter():
                     full_payload += content_packet.payload
                     content_match = self.get_http_content(full_payload)
 
-                if self.valid_payload(full_payload):
-                    self.send_response(packet, full_payload)
-                else:
+                if packet.ipv4.src_addr in self.logged_into_hp:
+                    self.send_response(packet, full_payload, from_honeypot=True)
+
+                elif not self.valid_payload(full_payload):
+                    self.logger.warning(f"SQL Injection attack was caught from {packet.ipv4.src_addr}")
+                    probable_os = self.fingerprint(packet)
+
                     if packet.ipv4.src_addr not in self.blacklist:
                         self.blacklist.add_address(packet.ipv4.src_addr)
+                        self.logger.info(f"{packet.ipv4.src_addr} has been added to blacklist and database")
+                        self.logger.info(f"The OS of attacker at {packet.ipv4.src_addr} is probably: {probable_os}")
+
+                    database.add_attacker(packet.ipv4.src_addr, probable_os)
+                    database.add_attack(packet.ipv4.src_addr, "Attempted an SQL Injection attack")
+                    self.logged_into_hp.append(packet.ipv4.src_addr)
                     self.send_response(packet, full_payload, from_honeypot=True)
+
+                else:
+                    if self.get_login_creds(full_payload):
+                        self.logged_into_asset.append(packet.ipv4.src_addr)
+                    self.send_response(packet, full_payload)
+
+                if hasattr(request, "path") and request.path == "/logout":
+                    if packet.ipv4.src_addr in self.logged_into_hp:
+                        self.logged_into_hp.remove(packet.ipv4.src_addr)
+                    elif packet.ipv4.src_addr in self.logged_into_asset:
+                        self.logged_into_asset.remove(packet.ipv4.src_addr)
 
     def send_response(self, packet, payload, from_honeypot=False):
         """
@@ -166,8 +201,7 @@ class HTTPRouter():
         Returns:
             bool: Returns whether the payload is valid or not
         """
-        pattern = b"email=(?P<email>.*)&password=(?P<password>.*)&submit=Log\+In"
-        login_match = re.search(pattern, payload)
+        login_match = self.get_login_creds(payload)
         if not login_match: return True  # If no credentials, valid payload
 
         credentials = (login_match.group("email"),
@@ -177,6 +211,21 @@ class HTTPRouter():
         if any(char in cred for cred in credentials for char in forbidden_chars):
             return False
         return True
+
+    def get_login_creds(self, payload):
+        """
+        Returns a regex match for login credentials in a
+        HTTP request
+
+        Args:
+            payload (bytes): HTTP payload, as bytes
+
+        Returns:
+            re.Match: Returns the match or none if not found
+        """
+        pattern = b"email=(?P<email>.*)&password=(?P<password>.*)&submit=Log\+In"
+        login_match = re.search(pattern, payload)
+        return login_match
 
     def split_payload(self, payload):
         """
@@ -208,6 +257,56 @@ class HTTPRouter():
         pattern = b"\r\n\r\n(?P<content>(.|\s)*)"
         content_match = re.search(pattern, payload)
         return content_match
+
+    def fingerprint(self, packet):
+        """
+        Calculates the most probable operating system of the packet source,
+        based on the packets' closest original TTL and window size.
+
+        Args:
+            packet (pydivert packet):
+
+        Returns:
+            str: A string of the most probable OS
+        """
+        ttl = packet.ipv4.ttl
+        window_size = packet.tcp.window_size
+        closest_ttl = min(filter(lambda x: x >= ttl, [64, 128, 255]))
+        os_mapper = {
+            64: {
+                5720: "Google's customized Linux",
+                5840: "Linux (kernel 2.4 and 2.6)",
+                16384: "OpenBSD, AIX 4.3",
+                32120: "Linux (kernel 2.2)",
+                65535: "FreeBSD"
+            },
+            128: {
+                8192: "Windows 7, Vista, and Server 2008",
+                16384: "Windows 2000",
+                65535: "Windows XP"
+            },
+            255: {
+                4128: "Cisco Router (IOS 12.4)",
+                8760: "Solaris 7"
+            }
+        }
+
+        probable_os = os_mapper.get(closest_ttl).get(window_size)
+        if probable_os is None: probable_os = "Unknown OS"
+        return probable_os
+
+    def initialize_logger(self):
+        """
+        Initializes the logging in the app
+        """
+        open(LOG_PATH, "w").close()
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.DEBUG)
+        formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+        file_handler = logging.FileHandler(LOG_PATH)
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(formatter)
+        self.logger.addHandler(file_handler)
 
 
 if __name__ == "__main__":
