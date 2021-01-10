@@ -5,11 +5,11 @@ import random
 import urllib
 import socket
 import re
+import db_updater
 from threading import Thread
 from blacklist import Blacklist
 from http_request import HTTPRequest
 from database import database
-
 
 ASSET_IP = "10.0.0.10"
 ASSET_PORT = 8080
@@ -20,6 +20,7 @@ HONEYPOT_PORT = 8080
 
 WINDIVERT_FILTER = f"tcp.DstPort == {FAKE_ASSET_PORT} and inbound"
 LOG_PATH = "app.log"
+MAX_SYNS = 10
 MAX_SEQUENCE_NUM = 4294967295
 
 
@@ -28,7 +29,6 @@ class HTTPRouter():
         self.w = pydivert.WinDivert(WINDIVERT_FILTER)
         self.blacklist = Blacklist()
         self.requests_to_handle = []
-        self.logged_into_asset = []
         self.logged_into_hp = []
         self.syns = {}
         self.handlers = [
@@ -86,9 +86,9 @@ class HTTPRouter():
             else:  # ACK
                 self.syns.pop(packet.ipv4.src_addr, None)
 
-            if self.syns.get(packet.ipv4.src_addr, 0) >= 10:
+            if self.syns.get(packet.ipv4.src_addr, 0) == MAX_SYNS:
                 self.syns.pop(packet.ipv4.src_addr, None)
-                self.logger.warning(f"DOS attack (SYN flood) detected from {packet.ipv4.src_addr}")
+                self.logger.warning(f"DOS attack (SYN flood) detected from {packet.ipv4.src_addr}:{packet.tcp.src_port}")
 
     def requests_handler(self):
         """
@@ -111,33 +111,48 @@ class HTTPRouter():
                     full_payload += content_packet.payload
                     content_match = self.get_http_content(full_payload)
 
+                login_match = self.get_login_creds(full_payload)
+                if login_match:  # IP tries to log in
+                    email = urllib.parse.unquote(login_match.group("email").decode("utf-8"))
+                    username = database.get_username(email)
+                    if database.has_allowed(packet.ipv4.src_addr):  # IP already logged in before
+                        allowed = database.is_allowed(packet.ipv4.src_addr, username)
+                        if allowed:
+                            self.send_response(packet, full_payload)
+                        else:
+                            self.logged_into_hp.append(packet.ipv4.src_addr)
+                            self.send_response(packet, full_payload, from_honeypot=True)
+                    else: # first time he logs in
+                        database.add_allowed(packet.ipv4.src_addr, username)
+                        self.send_response(packet, full_payload)
+
                 if packet.ipv4.src_addr in self.logged_into_hp:
                     self.send_response(packet, full_payload, from_honeypot=True)
 
                 elif not self.valid_payload(full_payload):
-                    self.logger.warning(f"SQL Injection attack was caught from {packet.ipv4.src_addr}")
+                    self.logger.warning(f"SQL Injection attack was caught from {packet.ipv4.src_addr}:{packet.tcp.src_port}")
                     probable_os = self.fingerprint(packet)
 
                     if packet.ipv4.src_addr not in self.blacklist:
                         self.blacklist.add_address(packet.ipv4.src_addr)
-                        self.logger.info(f"{packet.ipv4.src_addr} has been added to blacklist and database")
+                        self.logger.info(f"{packet.ipv4.src_addr} has been added to blacklist")
                         self.logger.info(f"The OS of attacker at {packet.ipv4.src_addr} is probably: {probable_os}")
 
                     database.add_attacker(packet.ipv4.src_addr, probable_os)
-                    database.add_attack(packet.ipv4.src_addr, "Attempted an SQL Injection attack")
+                    database.add_attack(packet.ipv4.src_addr, packet.tcp.src_port, "Attempted SQL Injection attack")
                     self.logged_into_hp.append(packet.ipv4.src_addr)
                     self.send_response(packet, full_payload, from_honeypot=True)
 
                 else:
-                    if self.get_login_creds(full_payload):
-                        self.logged_into_asset.append(packet.ipv4.src_addr)
-                    self.send_response(packet, full_payload)
+                    response = self.send_response(packet, full_payload)
+                    if b"302 FOUND" in response:  # Some sort of redirect
+                        creds = self.get_register_creds(full_payload)
+                        if None not in creds:  # User registered successfully
+                            db_updater.add_new_user(creds[0], creds[1], "default.png", creds[2])
 
-                if hasattr(request, "path") and request.path == "/logout":
-                    if packet.ipv4.src_addr in self.logged_into_hp:
+                if hasattr(request, "path"):
+                    if request.path == "/logout" and packet.ipv4.src_addr in self.logged_into_hp:
                         self.logged_into_hp.remove(packet.ipv4.src_addr)
-                    elif packet.ipv4.src_addr in self.logged_into_asset:
-                        self.logged_into_asset.remove(packet.ipv4.src_addr)
 
     def send_response(self, packet, payload, from_honeypot=False):
         """
@@ -149,6 +164,9 @@ class HTTPRouter():
             payload (bytes): Full HTTP request
             from_honeypot (bool, optional): Determines if the response should
             be returned from the honeypot. Defaults to False.
+
+        Returns:
+            bytes: HTTP response in bytes
         """
         response = self.get_server_response(payload, from_honeypot)
         seq_num = packet.tcp.ack_num
@@ -163,6 +181,7 @@ class HTTPRouter():
                             / scapy.Raw(p)
             scapy.send(response_packet, verbose=0)
             seq_num += len(p)
+        return response
 
     def get_server_response(self, http_request, honeypot):
         """
@@ -227,6 +246,22 @@ class HTTPRouter():
         login_match = re.search(pattern, payload)
         return login_match
 
+    def get_register_creds(self, payload):
+        """
+        Returns credentials used to register
+
+        Args:
+            payload (bytes): HTTP payload, as bytes
+
+        Returns:
+            list: [username, email, password] used for registering
+        """
+        pattern = b"username=(?P<username>.*)&email=(?P<email>.*)&password=(?P<password>.*)&confirm_password=.*&submit=Sign\+Up"
+        register_match = re.search(pattern, payload)
+        if not register_match: return [None, None, None]
+        creds = [register_match.group("username"), register_match.group("email"), register_match.group("password")]
+        return [urllib.parse.unquote(cred.decode("utf-8")) for cred in creds]
+
     def split_payload(self, payload):
         """
         Receives a payload, splits it to a list of payloads,
@@ -238,7 +273,7 @@ class HTTPRouter():
         Returns:
             list: List of payloads
         """
-        max_payload_length = 1000  # Max checked is 1460
+        max_payload_length = 1200  # MTU = 1500
         payloads = [payload[i:i+max_payload_length]
                     for i in range(0, len(payload), max_payload_length)]
         return payloads
