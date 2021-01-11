@@ -1,7 +1,9 @@
 
+DEFAULT_FILE_PATH = "blacklist.txt"
+
 
 class Blacklist():
-    def __init__(self, file_path="blacklist.txt"):
+    def __init__(self, file_path=DEFAULT_FILE_PATH):
         self.file_path = file_path
         self.blacklist = []
         self.initialize_blacklist()

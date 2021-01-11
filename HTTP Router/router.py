@@ -112,20 +112,6 @@ class HTTPRouter():
                     content_match = self.get_http_content(full_payload)
 
                 login_match = self.get_login_creds(full_payload)
-                if login_match:  # IP tries to log in
-                    email = urllib.parse.unquote(login_match.group("email").decode("utf-8"))
-                    username = database.get_username(email)
-                    if database.has_allowed(packet.ipv4.src_addr):  # IP already logged in before
-                        allowed = database.is_allowed(packet.ipv4.src_addr, username)
-                        if allowed:
-                            self.send_response(packet, full_payload)
-                        else:
-                            self.logged_into_hp.append(packet.ipv4.src_addr)
-                            self.send_response(packet, full_payload, from_honeypot=True)
-                    else: # first time he logs in
-                        database.add_allowed(packet.ipv4.src_addr, username)
-                        self.send_response(packet, full_payload)
-
                 if packet.ipv4.src_addr in self.logged_into_hp:
                     self.send_response(packet, full_payload, from_honeypot=True)
 
@@ -143,11 +129,25 @@ class HTTPRouter():
                     self.logged_into_hp.append(packet.ipv4.src_addr)
                     self.send_response(packet, full_payload, from_honeypot=True)
 
+                elif login_match:
+                    email = urllib.parse.unquote(login_match.group("email").decode("utf-8"))
+                    username = database.get_username(email)
+                    if database.has_allowed(packet.ipv4.src_addr):
+                        if database.is_allowed(packet.ipv4.src_addr, username):
+                            self.send_response(packet, full_payload)
+                        else:
+                            self.logger.warning(f"{packet.ipv4.src_addr} has logged in to an account that's not allowed.")
+                            self.logged_into_hp.append(packet.ipv4.src_addr)
+                            self.send_response(packet, full_payload, from_honeypot=True)
+                    else:
+                        database.add_allowed(packet.ipv4.src_addr, username)
+                        self.send_response(packet, full_payload)
+
                 else:
                     response = self.send_response(packet, full_payload)
-                    if b"302 FOUND" in response:  # Some sort of redirect
+                    if b"302 FOUND" in response:
                         creds = self.get_register_creds(full_payload)
-                        if None not in creds:  # User registered successfully
+                        if None not in creds:
                             db_updater.add_new_user(creds[0], creds[1], "default.png", creds[2])
 
                 if hasattr(request, "path"):
