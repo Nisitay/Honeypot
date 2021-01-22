@@ -33,11 +33,12 @@ class HTTPRouter():
         self.w = pydivert.WinDivert(f"tcp.DstPort == {self.fake_port} and inbound")
         self.blacklist = Blacklist(BLACKLIST_PATH)
         self.syns = SynManager(MAX_SYNS_ALLOWED)
-        self.requests_to_handle = []
         self.logged_into_hp = []
+        self.requests_to_handle = []
+        self.requests = {}
         self.handlers = [
             Thread(target=self.requests_handler, args=()),
-            Thread(target=self.handle_packets, args=())
+            Thread(target=self.packets_handler, args=())
         ]
         self.initialize_logger()
 
@@ -50,7 +51,7 @@ class HTTPRouter():
         self.w.close()
         self.logger.info("HTTP router has stopped")
 
-    def handle_packets(self):
+    def packets_handler(self):
         """
         Handles the syn/fin/ack packets, sends packets with a payload
         to the corresponding function, and detects DOS attacks
@@ -95,71 +96,114 @@ class HTTPRouter():
 
     def requests_handler(self):
         """
-        Handles incoming HTTP requests, and sends them to
-        the honeypot/asset according to the contents of the request
+        registers incoming packets, and handles the HTTP
+        requests once they are finished.
         """
         while True:
             if self.requests_to_handle:
                 packet = self.requests_to_handle.pop(0)
-                request = HTTPRequest(packet.payload)  # Parse the HTTP request headers
-                content_length = (int(request.headers.get("Content-Length", 0))
-                                  if hasattr(request, "headers") else 0)
+                src_addr = packet.ipv4.src_addr
+                self.register_packet(packet)
+                if self.finished_request(self.requests[src_addr]):
+                    self.handle_http_request(self.requests[src_addr])
+                    del self.requests[src_addr]
 
-                full_payload = packet.payload
-                content_match = self.get_http_content(full_payload)
-                while not content_match or len(content_match.group("content")) < content_length:
-                    while True:
-                        if self.requests_to_handle: break
-                    content_packet = self.requests_to_handle.pop(0)
-                    full_payload += content_packet.payload
-                    content_match = self.get_http_content(full_payload)
+    def finished_request(self, request):
+        """
+        Checks whether the request is finished
 
-                login_match = self.get_login_creds(full_payload)
-                if packet.ipv4.src_addr in self.logged_into_hp:
-                    self.send_response(packet, full_payload, from_honeypot=True)
+        Args:
+            request (dict)
 
-                elif not self.valid_payload(full_payload):
-                    self.logger.warning(f"SQL Injection attack was caught from {packet.ipv4.src_addr}:{packet.tcp.src_port}")
-                    probable_os = self.fingerprint(packet)
+        Returns:
+            bool
+        """
+        content_match = self.get_http_content(request["request_bytes"])
+        if not content_match or len(content_match.group("content")) < request["content_length"]:
+            return False
+        return True
 
-                    if packet.ipv4.src_addr not in self.blacklist:
-                        self.blacklist.add_address(packet.ipv4.src_addr)
-                        self.logger.info(f"{packet.ipv4.src_addr} has been added to blacklist")
-                        self.logger.info(f"The OS of attacker at {packet.ipv4.src_addr} is probably: {probable_os}")
+    def handle_http_request(self, request):
+        """
+        Handles a finished http request
 
-                    database.add_attacker(packet.ipv4.src_addr, probable_os)
-                    database.add_attack(packet.ipv4.src_addr, packet.tcp.src_port, "Attempted SQL Injection attack")
-                    self.logged_into_hp.append(packet.ipv4.src_addr)
-                    self.send_response(packet, full_payload, from_honeypot=True)
+        Args:
+            request (dict) : A request dict.
+        """
+        full_payload = request["request_bytes"]
+        packet = request["first_packet"]
+        src_addr = packet.ipv4.src_addr
+        src_port = packet.tcp.src_port
+        request_headers = HTTPRequest(full_payload)
 
-                elif login_match:
-                    email = urllib.parse.unquote(login_match.group("email").decode("utf-8"))
-                    username = database.get_username(email)
-                    if database.has_allowed(packet.ipv4.src_addr):
-                        if database.is_allowed(packet.ipv4.src_addr, username) and packet.ipv4.src_addr not in self.blacklist:
-                            self.send_response(packet, full_payload)
-                        else:
-                            probable_os = self.fingerprint(packet)
-                            self.logger.warning(f"{packet.ipv4.src_addr} has logged in to a shadowed account.")
-                            database.add_attacker(packet.ipv4.src_addr, probable_os)
-                            database.add_attack(packet.ipv4.src_addr, packet.tcp.src_port,
-                                                "Attempted to log into a prohibited account, or attacked before.")
-                            self.logged_into_hp.append(packet.ipv4.src_addr)
-                            self.send_response(packet, full_payload, from_honeypot=True)
-                    else:
-                        database.add_allowed(packet.ipv4.src_addr, username)
-                        self.send_response(packet, full_payload)
+        login_match = self.get_login_creds(full_payload)
+        if src_addr in self.logged_into_hp:
+            self.send_response(packet, full_payload, from_honeypot=True)
 
+        elif not self.valid_payload(full_payload):
+            self.logger.warning(f"SQL Injection attack was caught from {src_addr}:{src_port}")
+            probable_os = self.fingerprint(packet)
+
+            if src_addr not in self.blacklist:
+                self.blacklist.add_address(src_addr)
+                self.logger.info(f"{src_addr} has been added to blacklist")
+                self.logger.info(f"The OS of attacker at {src_addr} is probably: {probable_os}")
+
+            database.add_attacker(src_addr, probable_os)
+            database.add_attack(src_addr, src_port, "Attempted SQL Injection attack")
+            self.logged_into_hp.append(src_addr)
+            self.send_response(packet, full_payload, from_honeypot=True)
+
+        elif login_match:
+            email = urllib.parse.unquote(login_match.group("email").decode("utf-8"))
+            username = database.get_username(email)
+            if database.has_allowed(src_addr):
+                if database.is_allowed(src_addr, username) and src_addr not in self.blacklist:
+                    self.send_response(packet, full_payload)
                 else:
-                    response = self.send_response(packet, full_payload)
-                    if b"302 FOUND" in response:
-                        creds = self.get_register_creds(full_payload)
-                        if None not in creds:
-                            db_updater.add_new_user(creds[0], creds[1], "default.png", creds[2])
+                    probable_os = self.fingerprint(packet)
+                    self.logger.warning(f"{src_addr} has logged in to a shadowed account.")
+                    database.add_attacker(src_addr, probable_os)
+                    database.add_attack(src_addr, src_port,
+                                        "Attempted to log into a prohibited account")
+                    self.logged_into_hp.append(src_addr)
+                    self.send_response(packet, full_payload, from_honeypot=True)
+            else:
+                database.add_allowed(src_addr, username)
+                self.send_response(packet, full_payload)
 
-                if (hasattr(request, "path") and request.path == "/logout"
-                   and packet.ipv4.src_addr in self.logged_into_hp):
-                    self.logged_into_hp.remove(packet.ipv4.src_addr)
+        else:
+            response = self.send_response(packet, full_payload)
+            if b"302 FOUND" in response:
+                creds = self.get_register_creds(full_payload)
+                if None not in creds:
+                    db_updater.add_new_user(creds[0], creds[1], "default.png", creds[2])
+
+        if (hasattr(request_headers, "path") and request_headers.path == "/logout"
+           and src_addr in self.logged_into_hp):
+            self.logged_into_hp.remove(src_addr)
+
+    def register_packet(self, packet):
+        """
+        Registers a packet into the "requests" dict
+        with the needed request inforamtion
+
+        Args:
+            packet (pydivert.packet)
+        """
+        src_addr = packet.ipv4.src_addr
+        payload = packet.payload
+        if src_addr not in self.requests:
+            request_headers = HTTPRequest(payload)
+            content_length = (int(request_headers.headers.get("Content-Length", 0))
+                              if hasattr(request_headers, "headers") else 0)
+            self.requests[src_addr] = {
+                "first_packet": packet,
+                "content_length": content_length,
+                "request_bytes": payload
+            }
+        else:
+            self.requests[src_addr]["request_bytes"] += payload # add request bytes
 
     def send_response(self, packet, payload, from_honeypot=False):
         """
@@ -167,7 +211,7 @@ class HTTPRouter():
         to the client.
 
         Args:
-            packet (pydivert packet): First packet of the HTTP request
+            packet (pydivert.packet): First packet of the HTTP request
             payload (bytes): Full HTTP request
             from_honeypot (bool, optional): Determines if the response should
             be returned from the honeypot. Defaults to False.
