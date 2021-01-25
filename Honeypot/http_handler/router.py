@@ -5,19 +5,15 @@ import random
 import urllib
 import socket
 import re
-from threading import Thread
+import threading
 
 from http_handler import db_updater
 from http_handler.blacklist import Blacklist
 from http_handler.syn_manager import SynManager
 from http_handler.http_request import HTTPRequest
 from http_handler.database import database
-
-# TODO: Move to config file
-BLACKLIST_PATH = "blacklist.txt"
-LOG_PATH = "app.log"
-MAX_SYNS_ALLOWED = 10
-MAX_SEQUENCE_NUM = 4294967295
+from http_handler.config import (BLACKLIST_PATH, LOG_PATH,
+                                 MAX_SYNS_ALLOWED, MAX_SEQUENCE_NUM)
 
 
 class HTTPRouter():
@@ -30,25 +26,30 @@ class HTTPRouter():
         self.honeypot_port = honeypot_port
         self.fake_port = fake_asset_port
 
-        self.w = pydivert.WinDivert(f"tcp.DstPort == {self.fake_port} and inbound")
+        self._w = pydivert.WinDivert(f"tcp.DstPort == {self.fake_port} and inbound")
+        self._running = threading.Event()
+        self._handlers = [
+            threading.Thread(target=self.requests_handler, args=()),
+            threading.Thread(target=self.packets_handler, args=())
+        ]
+
         self.blacklist = Blacklist(BLACKLIST_PATH)
         self.syns = SynManager(MAX_SYNS_ALLOWED)
         self.logged_into_hp = []
         self.requests_to_handle = []
         self.requests = {}
-        self.handlers = [
-            Thread(target=self.requests_handler, args=()),
-            Thread(target=self.packets_handler, args=())
-        ]
         self.initialize_logger()
 
     def start(self):
-        self.w.open()
-        for handler in self.handlers:
+        self._running.set()
+        self._w.open()
+        self.logger.info("HTTP router has started. Handling packets...")
+        for handler in self._handlers:
             handler.start()
 
     def stop(self):
-        self.w.close()
+        self._running.clear()
+        self._w.close()
         self.logger.info("HTTP router has stopped")
 
     def packets_handler(self):
@@ -56,13 +57,12 @@ class HTTPRouter():
         Handles the syn/fin/ack packets, sends packets with a payload
         to the corresponding function, and detects DOS attacks
         """
-        self.logger.info("HTTP router has started. Handling packets...")
-        while True:
-            packet = self.w.recv()
+        while self._running.isSet():
+            packet = self._w.recv()
 
             if len(packet.payload) > 0 and packet.tcp.ack:
-                ack = scapy.IP(src=self.asset_ip, dst=packet.ipv4.src_addr)\
-                    / scapy.TCP(sport=self.fake_port, dport=packet.tcp.src_port, flags="A",
+                ack = scapy.IP(src=self.asset_ip, dst=packet.src_addr)\
+                    / scapy.TCP(sport=self.fake_port, dport=packet.src_port, flags="A",
                                 seq=packet.tcp.ack_num,
                                 ack=packet.tcp.seq_num + len(packet.payload))
                 scapy.send(ack, verbose=0)
@@ -70,39 +70,39 @@ class HTTPRouter():
 
             elif packet.tcp.syn:
                 self.syns.register_syn(packet.ipv4.src_addr)
-                syn_ack = scapy.IP(src=self.asset_ip, dst=packet.ipv4.src_addr)\
-                        / scapy.TCP(sport=self.fake_port, dport=packet.tcp.src_port, flags="SA",
+                syn_ack = scapy.IP(src=self.asset_ip, dst=packet.src_addr)\
+                        / scapy.TCP(sport=self.fake_port, dport=packet.src_port, flags="SA",
                                     seq=random.randint(0, MAX_SEQUENCE_NUM),
                                     ack=packet.tcp.seq_num + 1)
                 scapy.send(syn_ack, verbose=0)
 
             elif packet.tcp.fin:
-                fin_ack = scapy.IP(src=self.asset_ip, dst=packet.ipv4.src_addr)\
-                        / scapy.TCP(sport=self.fake_port, dport=packet.tcp.src_port, flags="FA",
+                fin_ack = scapy.IP(src=self.asset_ip, dst=packet.src_addr)\
+                        / scapy.TCP(sport=self.fake_port, dport=packet.src_port, flags="FA",
                                     seq=packet.tcp.ack_num,
                                     ack=packet.tcp.seq_num)
                 scapy.send(fin_ack, verbose=0)
-                ack = scapy.IP(src=self.asset_ip, dst=packet.ipv4.src_addr)\
-                    / scapy.TCP(sport=self.fake_port, dport=packet.tcp.src_port, flags="A",
+                ack = scapy.IP(src=self.asset_ip, dst=packet.src_addr)\
+                    / scapy.TCP(sport=self.fake_port, dport=packet.src_port, flags="A",
                                 seq=packet.tcp.ack_num + 1,
                                 ack=packet.tcp.seq_num + 1)
                 scapy.send(ack, verbose=0)
 
             else:  # ACK
-                self.syns.register_ack(packet.ipv4.src_addr)
+                self.syns.register_ack(packet.src_addr)
 
-            if self.syns.is_syn_flooding(packet.ipv4.src_addr):
-                self.logger.warning(f"DOS attack (SYN flood) detected from {packet.ipv4.src_addr}:{packet.tcp.src_port}")
+            if self.syns.is_syn_flooding(packet.src_addr):
+                self.logger.warning(f"DOS attack (SYN flood) detected from {packet.src_addr}:{packet.src_port}")
 
     def requests_handler(self):
         """
         registers incoming packets, and handles the HTTP
         requests once they are finished.
         """
-        while True:
+        while self._running.isSet():
             if self.requests_to_handle:
                 packet = self.requests_to_handle.pop(0)
-                src_addr = packet.ipv4.src_addr
+                src_addr = packet.src_addr
                 self.register_packet(packet)
                 if self.finished_request(self.requests[src_addr]):
                     self.handle_http_request(self.requests[src_addr])
@@ -132,8 +132,8 @@ class HTTPRouter():
         """
         full_payload = request["request_bytes"]
         packet = request["first_packet"]
-        src_addr = packet.ipv4.src_addr
-        src_port = packet.tcp.src_port
+        src_addr = packet.src_addr
+        src_port = packet.src_port
         request_headers = HTTPRequest(full_payload)
 
         login_match = self.get_login_creds(full_payload)
@@ -191,7 +191,7 @@ class HTTPRouter():
         Args:
             packet (pydivert.packet)
         """
-        src_addr = packet.ipv4.src_addr
+        src_addr = packet.src_addr
         payload = packet.payload
         if src_addr not in self.requests:
             request_headers = HTTPRequest(payload)
@@ -203,7 +203,7 @@ class HTTPRouter():
                 "request_bytes": payload
             }
         else:
-            self.requests[src_addr]["request_bytes"] += payload # add request bytes
+            self.requests[src_addr]["request_bytes"] += payload
 
     def send_response(self, packet, payload, from_honeypot=False):
         """
@@ -225,8 +225,8 @@ class HTTPRouter():
         payloads = self.split_payload(response)
 
         for p in payloads:
-            response_packet = scapy.IP(src=self.asset_ip, dst=packet.ipv4.src_addr)\
-                            / scapy.TCP(sport=self.fake_port, dport=packet.tcp.src_port, flags="PA",
+            response_packet = scapy.IP(src=self.asset_ip, dst=packet.src_addr)\
+                            / scapy.TCP(sport=self.fake_port, dport=packet.src_port, flags="PA",
                                         seq=seq_num,
                                         ack=ack_num)\
                             / scapy.Raw(p)
@@ -383,7 +383,8 @@ class HTTPRouter():
 
     def initialize_logger(self):
         """
-        Initializes the logging in the app
+        Initializes the logging in the app,
+        and creates the log file if it doesn't exist/ overrides if it exists
         """
         open(LOG_PATH, "w").close()
         self.logger = logging.getLogger(__name__)
@@ -393,3 +394,15 @@ class HTTPRouter():
         file_handler.setLevel(logging.INFO)
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
+
+    def remove_blocked_ip(self, ip_addr):
+        if ip_addr in self.blacklist:
+            self.blacklist.remove_address(ip_addr)
+
+    def get_table(self, table_name):
+        return database.get_pretty_table(table_name)
+
+    def get_log(self):
+        with open(LOG_PATH, "r") as f:
+            logs = f.read()
+        return logs

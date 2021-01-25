@@ -13,7 +13,8 @@ class Blacklist():
         return ip_addr in self.blacklist
 
     def initialize_blacklist(self):
-        open(self.file_path, "w").close()  # Create file if doesn't exist
+        # Create file if doesn't exist/ Override if exists
+        open(self.file_path, "w").close()
         with open(self.file_path, "r") as f:
             ips_list = [line.rstrip("\n") for line in f]
         self.blacklist.extend(ips_list)
