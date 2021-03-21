@@ -38,6 +38,7 @@ class HTTPRouter():
         self.logged_into_hp = []
         self.requests_to_handle = []
         self.requests = {}
+        self.logger = None
         self.initialize_logger()
 
     def start(self):
@@ -161,6 +162,8 @@ class HTTPRouter():
                 if database.is_allowed(src_addr, username) and src_addr not in self.blacklist:
                     self.send_response(packet, full_payload)
                 else:
+                    if src_addr not in self.blacklist:
+                        self.blacklist.add_address(src_addr)
                     probable_os = self.fingerprint(packet)
                     self.logger.warning(f"{src_addr} has logged in to a shadowed account.")
                     database.add_attacker(src_addr, probable_os)
@@ -398,6 +401,7 @@ class HTTPRouter():
     def remove_blocked_ip(self, ip_addr):
         if ip_addr in self.blacklist:
             self.blacklist.remove_address(ip_addr)
+            self.logger.info(f"IP address {ip_addr} was unblocked by the admin.")
 
     def get_table(self, table_name):
         return database.get_pretty_table(table_name)

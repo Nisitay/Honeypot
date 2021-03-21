@@ -1,15 +1,19 @@
 from http_handler import HTTPRouter
-from http_handler.config import (ASSET_IP, ASSET_PORT,
-                                 HONEYPOT_IP, HONEYPOT_PORT, FAKE_ASSET_PORT)
+from ftp_handler import FTPRouter
+from http_handler.config import (FTP_ASSET_IP, ASSET_FTP_PORT,
+                                 FTP_HONEYPOT_IP, HONEYPOT_FTP_PORT, FAKE_ASSET_FTP_PORT)
 
 
 def main():
-    http_router = HTTPRouter(ASSET_IP, ASSET_PORT,
-                             HONEYPOT_IP, HONEYPOT_PORT, FAKE_ASSET_PORT)
-    http_router.start()
+    #http_router = HTTPRouter(ASSET_IP, ASSET_HTTP_PORT,
+    #                         HONEYPOT_IP, HONEYPOT_HTTP_PORT, FAKE_ASSET_HTTP_PORT)
+    ftp_router = FTPRouter(FTP_ASSET_IP, ASSET_FTP_PORT,
+                           FTP_HONEYPOT_IP, HONEYPOT_FTP_PORT, FAKE_ASSET_FTP_PORT)
+    ftp_router.start()
+    #http_router.start()
+
     while True:
         command = input("----> ")
-
         if "!help" in command:
             print("Examples:\n!unblock_ip 10.0.0.10\n!log\n!table attackers")
         elif "!unblock_ip" in command:
