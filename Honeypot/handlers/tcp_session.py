@@ -7,7 +7,7 @@ MAX_WINDOW_SIZE = 5900
 
 class TCPSession():
     """
-    Handles a TCP session between the source and the target
+    Handles a TCP session between a source and a target, using scapy
     """
     def __init__(self, src_ip, src_port, dst_ip, dst_port):
         self.src_ip = src_ip

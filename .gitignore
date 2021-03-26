@@ -131,3 +131,5 @@ dmypy.json
 # VS code configuration
 .vscode/
 
+# internal configuration
+Honeypot/handlers/config.py

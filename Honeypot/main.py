@@ -1,21 +1,18 @@
-from http_handler import HTTPRouter
-from ftp_handler import FTPRouter
+from handlers import HTTPRouter, FTPRouter
 
-# HTTP
-HTTP_ASSET_IP = "10.0.0.6"
-ASSET_HTTP_PORT = 8080
-FAKE_ASSET_HTTP_PORT = 8000
-
-HTTP_HONEYPOT_IP = "10.0.0.6"
-HONEYPOT_HTTP_PORT = 8081
-
-# FTP
-FTP_ASSET_IP = "10.0.0.6"
-ASSET_FTP_PORT = 21
-FAKE_ASSET_FTP_PORT = 50021
-
-FTP_HONEYPOT_IP = "10.0.0.20"
-HONEYPOT_FTP_PORT = 21
+# temporary, should be user input
+from handlers.config import (
+    HTTP_ASSET_IP,
+    ASSET_HTTP_PORT,
+    FAKE_ASSET_HTTP_PORT,
+    HTTP_HONEYPOT_IP,
+    HONEYPOT_HTTP_PORT,
+    FTP_ASSET_IP,
+    ASSET_FTP_PORT,
+    FAKE_ASSET_FTP_PORT,
+    FTP_HONEYPOT_IP,
+    HONEYPOT_FTP_PORT
+)
 
 
 def main():

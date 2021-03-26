@@ -1,14 +1,15 @@
 import socket
 
+# temporary, should be user input
+from ..config import (
+    FTP_ASSET_IP,
+    ASSET_FTP_PORT,
+    FTP_HONEYPOT_IP,
+    HONEYPOT_FTP_PORT
+)
+
 CRLF = "\r\n"
 B_CRLF = b"\r\n"
-
-FTP_ASSET_IP = "10.0.0.6"
-ASSET_FTP_PORT = 21
-
-FTP_HONEYPOT_IP = "10.0.0.20"
-HONEYPOT_FTP_PORT = 21
-
 ASSET_ADDR = (FTP_ASSET_IP, ASSET_FTP_PORT)
 HONEYPOT_ADDR = (FTP_HONEYPOT_IP, HONEYPOT_FTP_PORT)
 

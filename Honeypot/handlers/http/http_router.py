@@ -6,10 +6,9 @@ import re
 from dataclasses import dataclass
 from xmlrpc.client import ServerProxy
 
-from http_handler.tcp_router import TCPRouter
-from http_handler.tcp_session import TCPSession
-from http_handler.http_request import HTTPRequest
-from http_handler.database import database
+from .. import TCPRouter, TCPSession
+from .http_request import HTTPRequest
+from .database import database
 
 
 class HTTPRouter(TCPRouter):
@@ -17,6 +16,8 @@ class HTTPRouter(TCPRouter):
         super().__init__(*args, **kwargs)
 
         self.logged_into_hp = []
+        self.req = HTTPRequest(bytes("GET /home", "utf-8"))
+        print(type(self.req))
         self.requests_to_handle = queue.Queue()
         self.requests = {}
         self.sessions = {}

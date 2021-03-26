@@ -3,9 +3,8 @@ import pydivert
 import queue
 from dataclasses import dataclass
 
-from ftp_handler.tcp_router import TCPRouter
-from ftp_handler.tcp_session import TCPSession
-from ftp_handler.ftp_proxy import FTPProxy
+from handlers import TCPRouter, TCPSession
+from .ftp_proxy import FTPProxy
 
 
 class FTPRouter(TCPRouter):

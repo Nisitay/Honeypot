@@ -2,15 +2,11 @@ import threading
 import pydivert
 import logging
 import abc
-
 from abc import abstractmethod
+
 from .blacklist import Blacklist
 from .syn_handler import SynHandler
-
-
-BLACKLIST_PATH = "blacklist.txt"
-LOG_PATH = "app.log"
-MAX_SYNS_ALLOWED = 10
+from .config import BLACKLIST_PATH, LOG_PATH, MAX_SYNS_ALLOWED
 
 
 class TCPRouter(abc.ABC):

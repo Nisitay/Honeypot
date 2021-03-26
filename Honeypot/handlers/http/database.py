@@ -2,7 +2,7 @@ import sqlite3 as lite
 import pandas
 import datetime
 from threading import Lock
-from http_handler.config import DATABASE_PATH, ASSET_DATABASE_PATH
+from ..config import DATABASE_PATH, ASSET_DATABASE_PATH
 
 
 class Database():
