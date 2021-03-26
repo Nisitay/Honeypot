@@ -1,20 +1,23 @@
+import pydivert
 import urllib
 import socket
+import queue
 import re
+from dataclasses import dataclass
+from xmlrpc.client import ServerProxy
 
-from http_handler.router import Router
+from http_handler.tcp_router import TCPRouter
 from http_handler.tcp_session import TCPSession
-from http_handler import db_updater
 from http_handler.http_request import HTTPRequest
 from http_handler.database import database
 
 
-class HTTPRouter(Router):
+class HTTPRouter(TCPRouter):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.logged_into_hp = []
-        self.requests_to_handle = []
+        self.requests_to_handle = queue.Queue()
         self.requests = {}
         self.sessions = {}
 
@@ -28,10 +31,10 @@ class HTTPRouter(Router):
         if packet.tcp.seq_num < session.ack:  # Retransmission
             return
         session.register_payload_packet(packet)
-        self.requests_to_handle.append(packet)
+        self.requests_to_handle.put(packet)
 
     def handle_fin_packet(self, packet):
-        self.sessions[(packet.src_addr, packet.src_port)].register_fin(packet)
+        self.sessions[(packet.src_addr, packet.src_port)].disconnect()
 
     def requests_handler(self):
         """
@@ -39,13 +42,12 @@ class HTTPRouter(Router):
         requests once they are finished.
         """
         while self._running.isSet():
-            if self.requests_to_handle:
-                packet = self.requests_to_handle.pop(0)
-                src_addr = packet.src_addr
-                self.register_packet(packet)
-                if self.finished_request(self.requests[src_addr]):
-                    self.handle_http_request(self.requests[src_addr])
-                    del self.requests[src_addr]
+            packet = self.requests_to_handle.get()
+            src_addr = packet.src_addr
+            self.register_packet(packet)
+            if self.finished_request(self.requests[src_addr]):
+                self.handle_http_request(self.requests[src_addr])
+                del self.requests[src_addr]
 
     def finished_request(self, request):
         """
@@ -57,8 +59,8 @@ class HTTPRouter(Router):
         Returns:
             bool
         """
-        content_match = self.get_http_content(request["request_bytes"])
-        if not content_match or len(content_match.group("content")) < request["content_length"]:
+        content_match = self.get_http_content(request.request_bytes)
+        if not content_match or len(content_match.group("content")) < request.content_length:
             return False
         return True
 
@@ -69,8 +71,8 @@ class HTTPRouter(Router):
         Args:
             request (dict) : A request dict.
         """
-        full_payload = request["request_bytes"]
-        packet = request["first_packet"]
+        full_payload = request.request_bytes
+        packet = request.first_packet
         src_addr = packet.src_addr
         src_port = packet.src_port
         request_headers = HTTPRequest(full_payload)
@@ -118,7 +120,7 @@ class HTTPRouter(Router):
             if b"302 FOUND" in response:
                 creds = self.get_register_creds(full_payload)
                 if None not in creds:
-                    db_updater.add_new_user(creds[0], creds[1], "default.png", creds[2])
+                    self.add_new_user(creds[0], creds[1], "default.png", creds[2])
 
         if (hasattr(request_headers, "path") and request_headers.path == "/logout"
            and src_addr in self.logged_into_hp):
@@ -138,13 +140,9 @@ class HTTPRouter(Router):
             request_headers = HTTPRequest(payload)
             content_length = (int(request_headers.headers.get("Content-Length", 0))
                               if hasattr(request_headers, "headers") else 0)
-            self.requests[src_addr] = {
-                "first_packet": packet,
-                "content_length": content_length,
-                "request_bytes": payload
-            }
+            self.requests[src_addr] = Request(packet, content_length, payload)
         else:
-            self.requests[src_addr]["request_bytes"] += payload
+            self.requests[src_addr].request_bytes += payload
 
     def send_response(self, src_addr, src_port, payload, from_honeypot=False):
         """
@@ -261,10 +259,17 @@ class HTTPRouter(Router):
         content_match = re.search(pattern, payload)
         return content_match
 
+    def add_new_user(self, username, email, image_file_name, password):
+        url = f"http://{self.honeypot_ip}:50000"
+        with ServerProxy(url, allow_none=True) as s:
+            s.add_new_user(username, email, image_file_name, password)
+
     def get_table(self, table_name):
         return database.get_pretty_table(table_name)
 
-    def get_log(self):
-        with open(LOG_PATH, "r") as f:
-            logs = f.read()
-        return logs
+
+@dataclass
+class Request():
+    first_packet: pydivert.Packet
+    content_length: int
+    request_bytes: bytes

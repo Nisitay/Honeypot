@@ -2,19 +2,23 @@ import scapy.all as scapy
 import random
 
 MAX_SEQUENCE_NUM = 4294967295
+MAX_WINDOW_SIZE = 5900
 
 
 class TCPSession():
     """
     Handles a TCP session between the source and the target
     """
-    def __init__(self, router_ip, router_port, client_ip, client_port):
-        self.router_ip = router_ip
-        self.client_ip = client_ip
-        self.router_port = router_port
-        self.client_port = client_port
+    def __init__(self, src_ip, src_port, dst_ip, dst_port):
+        self.src_ip = src_ip
+        self.dst_ip = dst_ip
+        self.src_port = src_port
+        self.dst_port = dst_port
         self.seq = 0
         self.ack = 0
+        self.window = 0
+        self.s = scapy.conf.L3socket()
+        self.ip = scapy.IP(src=self.src_ip, dst=self.dst_ip)
 
     def connect(self):
         """
@@ -22,19 +26,14 @@ class TCPSession():
         then returns ack to finish handshake
         """
         self.seq = random.randint(0, MAX_SEQUENCE_NUM)
-        syn = scapy.IP(src=self.router_ip, dst=self.client_ip)\
-            / scapy.TCP(sport=self.router_port, dport=self.client_port, flags="S",
-                        seq=self.seq,
-                        ack=self.ack)
+        syn = self.ip / scapy.TCP(sport=self.src_port, dport=self.dst_port,
+                                  flags="S", seq=self.seq, ack=self.ack,
+                                  options=[("MSS", 1460)])
         self.seq += 1
-        syn_ack = scapy.sr1(syn, verbose=0)
+        syn_ack = self.s.sr1(syn, verbose=0)
 
         self.ack = syn_ack[scapy.TCP].seq + 1
-        ack = scapy.IP(src=self.router_ip, dst=self.client_ip)\
-            / scapy.TCP(sport=self.router_port, dport=self.client_port, flags="A",
-                        seq=self.seq,
-                        ack=self.ack)
-        scapy.send(ack, verbose=0)
+        self._send_ack()
 
     def register_syn_ack(self, syn_ack_packet):
         """
@@ -45,11 +44,7 @@ class TCPSession():
             syn_ack_packet (pydivert.Packet): a pydivert packet
         """
         self.ack = syn_ack_packet.tcp.seq_num + 1
-        ack = scapy.IP(src=self.router_ip, dst=self.client_ip)\
-            / scapy.TCP(sport=self.router_port, dport=self.client_port, flags="A",
-                        seq=self.seq,
-                        ack=self.ack)
-        scapy.send(ack, verbose=0)
+        self._send_ack()
 
     def register_syn(self, syn_packet):
         """
@@ -61,33 +56,23 @@ class TCPSession():
         """
         self.ack = syn_packet.tcp.seq_num + 1
         self.seq = random.randint(0, MAX_SEQUENCE_NUM)
-        syn_ack = scapy.IP(src=self.router_ip, dst=self.client_ip)\
-            / scapy.TCP(sport=self.router_port, dport=self.client_port, flags="SA",
-                        seq=self.seq,
-                        ack=self.ack)
-        scapy.send(syn_ack, verbose=0)
+        syn_ack = self.ip / scapy.TCP(sport=self.src_port, dport=self.dst_port,
+                                      flags="SA", seq=self.seq, ack=self.ack,
+                                      options=[("MSS", 1460)])
+        self.s.send(syn_ack)
         self.seq += 1
 
-    def register_fin(self, fin_packet):
+    def disconnect(self):
         """
-        Receives a fin packet and closes the connection
-        (returns a fin-ack packet)
-
-        Args:
-            fin_packet (pydivert.Packet): a pydivert packet
+        Disconnects from the target (sends fin-ack/ack)
         """
-        fin_ack = scapy.IP(src=self.router_ip, dst=self.client_ip)\
-            / scapy.TCP(sport=self.router_port, dport=self.client_port, flags="FA",
-                        seq=self.seq,
-                        ack=self.ack)
-        scapy.send(fin_ack, verbose=0)
+        fin_ack = self.ip / scapy.TCP(sport=self.src_port, dport=self.dst_port,
+                                      flags="FA", seq=self.seq, ack=self.ack)
+        self.s.send(fin_ack)
         self.seq += 1
         self.ack += 1
-        ack = scapy.IP(src=self.router_ip, dst=self.client_ip)\
-            / scapy.TCP(sport=self.router_port, dport=self.client_port, flags="A",
-                        seq=self.seq,
-                        ack=self.ack)
-        scapy.send(ack, verbose=0)
+        self._send_ack()
+        self.s.close()
 
     def register_payload_packet(self, payload_packet):
         """
@@ -97,11 +82,10 @@ class TCPSession():
             payload_packet (pydivert.Packet): a pydivert packet
         """
         self.ack += len(payload_packet.payload)
-        ack = scapy.IP(src=self.router_ip, dst=self.client_ip)\
-            / scapy.TCP(sport=self.router_port, dport=self.client_port, flags="A",
-                        seq=self.seq,
-                        ack=self.ack)
-        scapy.send(ack, verbose=0)
+        self.window += len(payload_packet.payload)
+        if len(payload_packet.payload) < 1460 or self.window >= MAX_WINDOW_SIZE:
+            self._send_ack()
+            self.window = 0
 
     def sendall(self, payloads):
         """
@@ -122,13 +106,17 @@ class TCPSession():
             payload (str/bytes): a TCP payload
         """
         for payload in self._split_payload(payload):
-            p = scapy.IP(src=self.router_ip, dst=self.client_ip)\
-                / scapy.TCP(sport=self.router_port, dport=self.client_port, flags="PA",
-                            seq=self.seq,
-                            ack=self.ack)\
-                / scapy.Raw(payload)
-            scapy.send(p, verbose=0)
+            p = self.ip / scapy.TCP(sport=self.src_port, dport=self.dst_port,
+                                    flags="PA",
+                                    seq=self.seq,
+                                    ack=self.ack) / scapy.Raw(payload)
+            self.s.send(p)
             self.seq += len(payload)
+
+    def _send_ack(self):
+        ack = self.ip / scapy.TCP(sport=self.src_port, dport=self.dst_port,
+                                  flags="A", seq=self.seq, ack=self.ack)
+        self.s.send(ack)
 
     def _split_payload(self, payload):
         """
@@ -139,9 +127,8 @@ class TCPSession():
             payload (str/bytes): TCP payload
 
         Returns:
-            list: List of payloads
+            generator: Generator of payloads
         """
-        max_payload_length = 1400  # MTU dependent
-        payloads = [payload[i:i+max_payload_length]
-                    for i in range(0, len(payload), max_payload_length)]
-        return payloads
+        max_payload_length = 1450  # MTU dependent
+        return (payload[i:i+max_payload_length]
+                for i in range(0, len(payload), max_payload_length))

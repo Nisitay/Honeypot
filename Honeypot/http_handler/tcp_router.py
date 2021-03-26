@@ -13,7 +13,7 @@ LOG_PATH = "app.log"
 MAX_SYNS_ALLOWED = 10
 
 
-class Router(abc.ABC):
+class TCPRouter(abc.ABC):
     """
     Basic router structure to inherit from
     """
