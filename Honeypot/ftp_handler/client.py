@@ -1,12 +1,25 @@
-import time
-from .ftp_proxy import FTPProxy
-from ftplib import FTP
+import scapy.all as scapy
+#from .ftp_proxy import FTPProxy
+#from ftplib import FTP
+import queue
 import pydivert
-SERVER_IP = "10.0.0.16"
+from .tcp_session import TCPSession
+from .ftp_proxy import FTPProxy
+from dataclasses import dataclass
+
+SERVER_IP = "10.0.0.6"
 SERVER_PORT = 21
 
 CRLF = "\r\n"
 B_CRLF = b"\r\n"
+
+
+@dataclass
+class Session():
+    session: TCPSession
+    data_commands: queue.Queue
+    ftp_server: FTPProxy
+    data_session: TCPSession = None
 
 def get_dir(ftp, data_sock, callback):
     command = b"LIST\r\n"
@@ -36,7 +49,7 @@ def put_file(file, ftp, data_conn, callback=None):
     print("Finished sending. Answer:", responses)
 
 def get_file(ftp, data_conn, callback):
-    command = b"RETR Alice.txt\r\n"
+    command = b"RETR welcome.txt\r\n"
     responses = ftp.send_cmd(command)
     print("Sent request. Answer:", responses)
     while True:
@@ -52,45 +65,45 @@ buffer = []
 
 filepath = r"C:\Users\itay6\Desktop\Alice.txt"
 
-ftp = FTPProxy("asset", SERVER_IP, SERVER_PORT)
+ftp = FTPProxy()
 ftp.connect()
 banner = ftp.get_response()
+print(banner)
 ftp.login_anonymously()
 
 data_sock, responses = ftp.make_data_port()  # open data connection with server, and return response
 data_conn, sockaddr = data_sock.accept()
-print("Opened data socket. Answer:", responses)
+#print("Opened data socket. Answer:", responses)
 get_file(ftp, data_conn, buffer.append)
 #with open(filepath, "rb") as f:
 #    put_file(f, ftp, data_conn)
-ftp.quit()
+#ftp.quit()
+"""client_seq = 0
+client_ack = 0
+client_port = 0
 
-"""w = pydivert.WinDivert("tcp.SrcPort == 50000 or tcp.DstPort == 50000")
-#w = pydivert.WinDivert("ip.DstAddr == 10.0.0.20 or ip.SrcAddr == 10.0.0.20")
+server_seq = 0
+server_ack = 0
+
+c = 0
+
+w = pydivert.WinDivert("tcp.DstPort == 50001 or tcp.SrcPort == 50000")  # inbound packets
+#w = pydivert.WinDivert("ip.DstAddr == 10.0.0.6 or 10.0.0.20")
 w.open()
 while True:
+
     packet = w.recv()
-    if len(packet.payload) > 1:
-        if packet.tcp.src_port == 50000:
-            print("Detected first payload from server")
-        else:
-            print("Detected first payload from client")
-        break
-    w.send(packet)
-    if len(packet.payload) > 1:
-        #total_payload = packet.payload
-        print(f"Total payload to expect: {packet.ipv4.packet_len - packet.ipv4.header_len - packet.tcp.header_len}")
-        print(f"Received payload: {len(packet.payload)}")
-        print(packet)
-        print("------------------------------------------------------")
-        while (packet.ipv4.packet_len != (packet.ipv4.header_len + packet.tcp.header_len + len(packet.payload))):
-            print("Havent received all data, need to receive more")
-            new_packet = w.recv()
-            print(new_packet)
-            packet.payload += new_packet.payload
-            print(f"Received {len(new_packet.payload)} more")
-        print(f"finished receiving all payload, total length {len(packet.payload)}")
-        #packet.payload = total_payload
-        #input("waiting for input and then sending packet...")
+    if packet.src_addr == "10.0.0.6":  # server sent
+        if packet.tcp.syn:
+            server_ack = packet.tcp.seq_num + 1
+        server_seq = packet.tcp.seq_num
+        server_ack = packet.tcp.ack_num
+        packet.src_port = 50001
+    elif packet.src_addr == "10.0.0.20":  # client sent
+        packet.dst_port = 50000
+        client_port = packet.src_port
+        client_seq = packet.tcp.seq_num
+        client_ack = packet.tcp.ack_num
+    print(packet)
     w.send(packet)
 w.close()"""

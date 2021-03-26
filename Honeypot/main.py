@@ -1,12 +1,26 @@
 from http_handler import HTTPRouter
 from ftp_handler import FTPRouter
-from http_handler.config import (FTP_ASSET_IP, ASSET_FTP_PORT,
-                                 FTP_HONEYPOT_IP, HONEYPOT_FTP_PORT, FAKE_ASSET_FTP_PORT)
+
+# HTTP
+HTTP_ASSET_IP = "10.0.0.6"
+ASSET_HTTP_PORT = 8080
+FAKE_ASSET_HTTP_PORT = 8000
+
+HTTP_HONEYPOT_IP = "10.0.0.6"
+HONEYPOT_HTTP_PORT = 8081
+
+# FTP
+FTP_ASSET_IP = "10.0.0.6"
+ASSET_FTP_PORT = 21
+FAKE_ASSET_FTP_PORT = 50021
+
+FTP_HONEYPOT_IP = "10.0.0.20"
+HONEYPOT_FTP_PORT = 21
 
 
 def main():
-    #http_router = HTTPRouter(ASSET_IP, ASSET_HTTP_PORT,
-    #                         HONEYPOT_IP, HONEYPOT_HTTP_PORT, FAKE_ASSET_HTTP_PORT)
+    #http_router = HTTPRouter(HTTP_ASSET_IP, ASSET_HTTP_PORT,
+    #                         HTTP_HONEYPOT_IP, HONEYPOT_HTTP_PORT, FAKE_ASSET_HTTP_PORT)
     ftp_router = FTPRouter(FTP_ASSET_IP, ASSET_FTP_PORT,
                            FTP_HONEYPOT_IP, HONEYPOT_FTP_PORT, FAKE_ASSET_FTP_PORT)
     ftp_router.start()
@@ -18,7 +32,7 @@ def main():
             print("Examples:\n!unblock_ip 10.0.0.10\n!log\n!table attackers")
         elif "!unblock_ip" in command:
             ip_addr = command.split(" ")[1]
-            http_router.remove_blocked_ip(ip_addr)
+            http_router.unblock_ip(ip_addr)
         elif "!log" in command:
             logs = http_router.get_log()
             print(logs)

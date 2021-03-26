@@ -1,4 +1,4 @@
-class SynManager():
+class SynHandler():
     """
     Keeps track of SYN packets from different IP addresses.
     """

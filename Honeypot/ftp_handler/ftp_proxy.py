@@ -3,40 +3,66 @@ import socket
 CRLF = "\r\n"
 B_CRLF = b"\r\n"
 
+FTP_ASSET_IP = "10.0.0.6"
+ASSET_FTP_PORT = 21
+
+FTP_HONEYPOT_IP = "10.0.0.20"
+HONEYPOT_FTP_PORT = 21
+
+ASSET_ADDR = (FTP_ASSET_IP, ASSET_FTP_PORT)
+HONEYPOT_ADDR = (FTP_HONEYPOT_IP, HONEYPOT_FTP_PORT)
+
 
 class FTPProxy():
     """
     Handles connection with the FTP asset/honeypot - sends raw FTP commands
     using sockets and returns the answer.
+    Connects to the asset at first, and able to convert to honeypot/server.
     """
-    def __init__(self, target_type, target_ip, target_port):
-        self.target_type = target_type  # "asset" or "honeypot"
-        self.target_ip = target_ip
-        self.target_port = target_port
+    def __init__(self):
+        self.target = ASSET_ADDR
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.maxline = 8192
         self.encoding = "utf-8"
 
     @property
     def connected_to_asset(self):
-        return self.target_type == "asset"
+        return self.target == ASSET_ADDR
 
     @property
     def connected_to_honeypot(self):
-        return self.target_type == "honeypot"
+        return self.target == HONEYPOT_ADDR
 
     def connect(self):
-        self.sock.connect((self.target_ip, self.target_port))
+        self.sock.connect(self.target)
         self.file = self.sock.makefile("r")
 
+    def convert_server(self, to_asset=False, to_honeypot=False):
+        """
+        Converts an FTP server (honeypot -> server / server -> honeypot)
+
+        Args:
+            to_asset (bool, optional): Defaults to False.
+            to_honeypot (bool, optional): Defaults to False.
+        """
+        self.quit()
+        self.target = HONEYPOT_ADDR if to_honeypot else ASSET_ADDR
+        self.connect()
+        self._get_multiline()  # skip banner
+        self.login_anonymously()
+
     def login_anonymously(self):
+        """
+        Logins to the FTP server using anonymous credentials
+        """
         username = b"anonymous"
         password = b"anonymous"
         self.send_cmd(b"USER " + username + B_CRLF)
         self.send_cmd(b"PASS " + password + B_CRLF)
 
     def get_response(self):
-        """Reads the server response from the socket
+        """
+        Reads the server response from the socket
 
         Returns:
             list: list of responses
@@ -44,7 +70,8 @@ class FTPProxy():
         return self._get_multiline()
 
     def send_cmd(self, cmd):
-        """Send a command and return the response
+        """
+        Send a command and return the response
 
         Args:
             cmd (bytes): FTP command
@@ -57,7 +84,7 @@ class FTPProxy():
 
     def make_data_port(self):
         """
-        Creates a new socket for data channel and send a PORT command for it.
+        Creates a new socket for data channel and sends a PORT command for it.
 
         Returns:
             tuple: data sock and the response to the PORT command
@@ -87,22 +114,21 @@ class FTPProxy():
         response = self._send_port_command(host, port)
         return sock, response
 
-    def transfercmd(self, cmd):
-        """Initiate a transfer over the data connection.
-
-        If the transfer is active, send a port command and the
-        transfer command, and accept the connection. Either way, return the socket for the
-        connection and the expected size of the transfer.  The
-        expected size may be None if it could not be determined.
-        """
-        with self.make_data_port() as sock:
-            resp = self.send_cmd(cmd)
-            conn, sockaddr = sock.accept()
-        return conn
-
     def quit(self):
         self.send_cmd(b"QUIT\r\n")
-        self._close()
+        self.close()
+
+    def close(self):
+        try:
+            file = self.file
+            self.file = None
+            if file is not None:
+                file.close()
+        finally:
+            sock = self.sock
+            self.sock = None
+            if sock is not None:
+                sock.close()
 
     def _get_line(self):
         """Reads a single line from the server over the command channel
@@ -157,15 +183,3 @@ class FTPProxy():
 
     def _send_command(self, cmd):
         self.sock.send(cmd)
-
-    def _close(self):
-        try:
-            file = self.file
-            self.file = None
-            if file is not None:
-                file.close()
-        finally:
-            sock = self.sock
-            self.sock = None
-            if sock is not None:
-                sock.close()

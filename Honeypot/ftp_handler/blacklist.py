@@ -3,16 +3,15 @@ class Blacklist():
     Stores the records of blacklisted IP addresses
     in a list and in a file, and keeps them in sync.
     """
-
     def __init__(self, file_path):
         self.file_path = file_path
         self.blacklist = []
-        self.initialize_blacklist()
+        self.initialize()
 
     def __contains__(self, ip_addr):
         return ip_addr in self.blacklist
 
-    def initialize_blacklist(self):
+    def initialize(self):
         # Create file if doesn't exist/ Override if exists
         open(self.file_path, "w").close()
         with open(self.file_path, "r") as f:

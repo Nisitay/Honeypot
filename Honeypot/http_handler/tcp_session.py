@@ -6,8 +6,7 @@ MAX_SEQUENCE_NUM = 4294967295
 
 class TCPSession():
     """
-    Listens in the router and handles a TCP session between
-    the client and the router
+    Handles a TCP session between the source and the target
     """
     def __init__(self, router_ip, router_port, client_ip, client_port):
         self.router_ip = router_ip
@@ -19,8 +18,8 @@ class TCPSession():
 
     def connect(self):
         """
-        Connects to the client - sends syn packet, waits for syn ack,
-        then returns ack to finish handshake)
+        Connects to the target - sends syn packet, waits for syn ack,
+        then returns ack to finish handshake
         """
         self.seq = random.randint(0, MAX_SEQUENCE_NUM)
         syn = scapy.IP(src=self.router_ip, dst=self.client_ip)\
@@ -69,20 +68,6 @@ class TCPSession():
         scapy.send(syn_ack, verbose=0)
         self.seq += 1
 
-    def disconnect(self):
-        fin_ack = scapy.IP(src=self.router_ip, dst=self.client_ip)\
-            / scapy.TCP(sport=self.router_port, dport=self.client_port, flags="FA",
-                        seq=self.seq,
-                        ack=self.ack)
-        scapy.send(fin_ack, verbose=0)
-        self.seq += 1
-        self.ack += 1
-        ack = scapy.IP(src=self.router_ip, dst=self.client_ip)\
-            / scapy.TCP(sport=self.router_port, dport=self.client_port, flags="A",
-                        seq=self.seq,
-                        ack=self.ack)
-        scapy.send(ack, verbose=0)
-
     def register_fin(self, fin_packet):
         """
         Receives a fin packet and closes the connection
@@ -118,7 +103,7 @@ class TCPSession():
                         ack=self.ack)
         scapy.send(ack, verbose=0)
 
-    def send_all(self, payloads):
+    def sendall(self, payloads):
         """
         Receives a list of payloads to send, and sends them
 
@@ -130,8 +115,8 @@ class TCPSession():
 
     def send(self, payload):
         """
-        Receives a payload and sends it to the client,
-        and splits payloads bigger than MTU to multiple packets
+        Receives a payload and sends it to the client.
+        Payloads bigger than MTU will be split to multiple packets
 
         Args:
             payload (str/bytes): a TCP payload
@@ -145,11 +130,10 @@ class TCPSession():
             scapy.send(p, verbose=0)
             self.seq += len(payload)
 
-
     def _split_payload(self, payload):
         """
         Receives a payload, splits it to a list of payloads,
-        each with maximum length that scapy can send.
+        each with maximum length that can be sent.
 
         Args:
             payload (str/bytes): TCP payload
@@ -157,7 +141,7 @@ class TCPSession():
         Returns:
             list: List of payloads
         """
-        max_payload_length = 1400  # MTU = 1500
+        max_payload_length = 1400  # MTU dependent
         payloads = [payload[i:i+max_payload_length]
                     for i in range(0, len(payload), max_payload_length)]
         return payloads

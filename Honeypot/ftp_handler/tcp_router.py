@@ -13,18 +13,20 @@ LOG_PATH = "app.log"
 MAX_SYNS_ALLOWED = 10
 
 
-class Router(abc.ABC):
+class TCPRouter(abc.ABC):
     """
-    Basic router structure to inherit from
+    Basic TCP router structure to inherit from
     """
     def __init__(self, asset_ip, asset_port,
-                 honeypot_ip, honeypot_port, fake_asset_port):
+                 honeypot_ip, honeypot_port, fake_port):
 
         self.asset_ip = asset_ip
         self.asset_port = asset_port
         self.honeypot_ip = honeypot_ip
         self.honeypot_port = honeypot_port
-        self.fake_port = fake_asset_port
+        self.fake_port = fake_port
+        self.blacklist = Blacklist(BLACKLIST_PATH)
+        self.syns = SynHandler(MAX_SYNS_ALLOWED)
         self.logger = self.initialize_logger()
 
         self._w = pydivert.WinDivert(f"tcp.DstPort == {self.fake_port} and inbound")
@@ -34,9 +36,6 @@ class Router(abc.ABC):
             threading.Thread(target=self.packets_handler, args=())
         ]
 
-        self.blacklist = Blacklist(BLACKLIST_PATH)
-        self.syns = SynHandler(MAX_SYNS_ALLOWED)
-
     def start(self):
         self._running.set()
         self._w.open()
@@ -45,7 +44,7 @@ class Router(abc.ABC):
 
     def packets_handler(self):
         """
-        Sends syn/fin/ack/payload packets to their corresponding handlers,
+        Sends syn/fin/payload packets to their corresponding handlers,
         and detects DOS attacks
         """
         while self._running.isSet():
