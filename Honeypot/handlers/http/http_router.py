@@ -6,36 +6,52 @@ import re
 from dataclasses import dataclass
 from xmlrpc.client import ServerProxy
 
-from .. import TCPRouter, TCPSession
+from .. import TCPRouter, TCPSession, ClientAddr
+from ..logger import Logger, HTTPGuiLogger
+from .http_proxy import HTTPProxy
+from ..database import database
 from .http_request import HTTPRequest
-from .database import database
+from .utils import finished_request, get_login_creds, get_register_creds, get_content_length
+
+
+@dataclass
+class HTTPSession():
+    tcp_session: TCPSession
+    sample_packet: pydivert.Packet  # TODO: check if necessary
+    http_server: HTTPProxy
+    content_length: int = 0
+    request_bytes: bytes = b""
 
 
 class HTTPRouter(TCPRouter):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-        self.logged_into_hp = []
-        self.req = HTTPRequest(bytes("GET /home", "utf-8"))
-        print(type(self.req))
-        self.requests_to_handle = queue.Queue()
-        self.requests = {}
+        self.logged_into_hp = set()
         self.sessions = {}
+        self.requests_to_handle = queue.Queue()
+        self.logger = Logger("HTTP Router", kwargs["log_path"], extra_handlers=[HTTPGuiLogger()]).get_logger()
 
     def handle_syn_packet(self, packet):
         session = TCPSession(self.asset_ip, self.fake_port, packet.src_addr, packet.src_port)
         session.register_syn(packet)
-        self.sessions[(packet.src_addr, packet.src_port)] = session
+        client_addr = ClientAddr(packet.src_addr, packet.src_port)
+        http_server = HTTPProxy((self.asset_ip, self.asset_port), (self.honeypot_ip, self.honeypot_port))
+        http_server.connect()
+        self.sessions[client_addr] = HTTPSession(session, packet, http_server)
 
     def handle_payload_packet(self, packet):
-        session = self.sessions[(packet.src_addr, packet.src_port)]
-        if packet.tcp.seq_num < session.ack:  # Retransmission
+        client_addr = ClientAddr(packet.src_addr, packet.src_port)
+        session = self.sessions[client_addr].tcp_session
+        if packet.tcp.seq_num < session.ack:  # TCP retransmission
             return
         session.register_payload_packet(packet)
         self.requests_to_handle.put(packet)
 
     def handle_fin_packet(self, packet):
-        self.sessions[(packet.src_addr, packet.src_port)].disconnect()
+        client_addr = ClientAddr(packet.src_addr, packet.src_port)
+        self.sessions[client_addr].tcp_session.disconnect()
+        self.sessions[client_addr].http_server.close()
+        del self.sessions[client_addr]
 
     def requests_handler(self):
         """
@@ -44,41 +60,28 @@ class HTTPRouter(TCPRouter):
         """
         while self._running.isSet():
             packet = self.requests_to_handle.get()
-            src_addr = packet.src_addr
+            client_addr = ClientAddr(packet.src_addr, packet.src_port)
+            session = self.sessions[client_addr]
             self.register_packet(packet)
-            if self.finished_request(self.requests[src_addr]):
-                self.handle_http_request(self.requests[src_addr])
-                del self.requests[src_addr]
+            if finished_request(session.request_bytes, session.content_length):
+                self.handle_http_request(session.request_bytes, packet)
+                session.content_length = 0
+                session.request_bytes = b""
 
-    def finished_request(self, request):
+    def handle_http_request(self, request_bytes, packet):
         """
-        Checks whether the request is finished
+        Handles a finished HTTP request
 
         Args:
-            request (dict)
-
-        Returns:
-            bool
+            request_bytes (bytes) : Full HTTP request.
+            packet (pydivert.Packet)
         """
-        content_match = self.get_http_content(request.request_bytes)
-        if not content_match or len(content_match.group("content")) < request.content_length:
-            return False
-        return True
-
-    def handle_http_request(self, request):
-        """
-        Handles a finished http request
-
-        Args:
-            request (dict) : A request dict.
-        """
-        full_payload = request.request_bytes
-        packet = request.first_packet
+        full_payload = request_bytes
         src_addr = packet.src_addr
         src_port = packet.src_port
         request_headers = HTTPRequest(full_payload)
+        login_match = get_login_creds(full_payload)
 
-        login_match = self.get_login_creds(full_payload)
         if src_addr in self.logged_into_hp:
             self.send_response(src_addr, src_port, full_payload, from_honeypot=True)
 
@@ -87,30 +90,29 @@ class HTTPRouter(TCPRouter):
             probable_os = self.fingerprint(packet)
 
             if src_addr not in self.blacklist:
-                self.blacklist.add_address(src_addr)
-                self.logger.info(f"{src_addr} has been added to blacklist")
+                self.add_to_blacklist(src_addr)
                 self.logger.info(f"The OS of attacker at {src_addr} is probably: {probable_os}")
 
             database.add_attacker(src_addr, probable_os)
             database.add_attack(src_addr, src_port, "Attempted SQL Injection attack")
-            self.logged_into_hp.append(src_addr)
+            self.logged_into_hp.add(src_addr)
             self.send_response(src_addr, src_port, full_payload, from_honeypot=True)
 
         elif login_match:
-            email = urllib.parse.unquote(login_match.group("email").decode("utf-8"))
+            email = urllib.parse.unquote(login_match.group("email").decode())
             username = database.get_username(email)
             if database.has_allowed(src_addr):
                 if database.is_allowed(src_addr, username) and src_addr not in self.blacklist:
                     self.send_response(src_addr, src_port, full_payload)
                 else:
                     if src_addr not in self.blacklist:
-                        self.blacklist.add_address(src_addr)
+                        self.add_to_blacklist(src_addr)
                     probable_os = self.fingerprint(packet)
                     self.logger.warning(f"{src_addr} has logged in to a shadowed account.")
                     database.add_attacker(src_addr, probable_os)
                     database.add_attack(src_addr, src_port,
                                         "Attempted to log into a prohibited account")
-                    self.logged_into_hp.append(src_addr)
+                    self.logged_into_hp.add(src_addr)
                     self.send_response(src_addr, src_port, full_payload, from_honeypot=True)
             else:
                 database.add_allowed(src_addr, username)
@@ -119,7 +121,7 @@ class HTTPRouter(TCPRouter):
         else:
             response = self.send_response(src_addr, src_port, full_payload)
             if b"302 FOUND" in response:
-                creds = self.get_register_creds(full_payload)
+                creds = get_register_creds(full_payload)
                 if None not in creds:
                     self.add_new_user(creds[0], creds[1], "default.png", creds[2])
 
@@ -129,21 +131,19 @@ class HTTPRouter(TCPRouter):
 
     def register_packet(self, packet):
         """
-        Registers a packet into the "requests" dict
+        Registers a packet to the correct session
         with the needed request inforamtion
 
         Args:
             packet (pydivert.packet)
         """
-        src_addr = packet.src_addr
         payload = packet.payload
-        if src_addr not in self.requests:
-            request_headers = HTTPRequest(payload)
-            content_length = (int(request_headers.headers.get("Content-Length", 0))
-                              if hasattr(request_headers, "headers") else 0)
-            self.requests[src_addr] = Request(packet, content_length, payload)
-        else:
-            self.requests[src_addr].request_bytes += payload
+        client_addr = ClientAddr(packet.src_addr, packet.src_port)
+        session = self.sessions[client_addr]
+        if not session.request_bytes:
+            #request_headers = HTTPRequest(payload)
+            session.content_length = get_content_length(payload)
+        session.request_bytes += payload
 
     def send_response(self, src_addr, src_port, payload, from_honeypot=False):
         """
@@ -159,36 +159,14 @@ class HTTPRouter(TCPRouter):
         Returns:
             bytes: HTTP response in bytes
         """
-        response = self.get_server_response(payload, from_honeypot)
-        self.sessions[(src_addr, src_port)].send(response)
+        client_addr = ClientAddr(src_addr, src_port)
+        http_server = self.sessions[client_addr].http_server
+
+        if from_honeypot and http_server.connected_to_asset:
+            http_server.convert_server(to_honeypot=True)
+        response = http_server.send_request(payload)
+        self.sessions[client_addr].tcp_session.send(response)
         return response
-
-    def get_server_response(self, http_request, honeypot):
-        """
-        Sends the HTTP request to the asset/honeypot,
-        and returns the HTTP response.
-
-        Args:
-            http_request (bytes):
-            honeypot (bool): Determines if the response
-            should be returned from the honeypot.
-
-        Returns:
-            bytes: HTTP response in bytes
-        """
-        addr = (self.honeypot_ip, self.honeypot_port) if honeypot else (self.asset_ip, self.asset_port)
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.connect(addr)
-        server.send(http_request)
-        http_response = b""
-
-        while True:
-            data = server.recv(2048)
-            if not data:
-                break
-            http_response += data
-        server.close()
-        return http_response
 
     def valid_payload(self, payload):
         """
@@ -201,76 +179,18 @@ class HTTPRouter(TCPRouter):
         Returns:
             bool: Returns whether the payload is valid or not
         """
-        login_match = self.get_login_creds(payload)
+        login_match = get_login_creds(payload)
         if not login_match:
-            return True  # If no credentials, valid payload
+            return True
 
-        credentials = (login_match.group("email"),
-                       login_match.group("password"))
-        forbidden_chars = (urllib.parse.quote(b'"').encode("utf-8"),
-                           urllib.parse.quote(b"'").encode("utf-8"))
+        credentials = login_match.groups()
+        forbidden_chars = (urllib.parse.quote('"').encode(),
+                           urllib.parse.quote("'").encode())
         if any(char in cred for cred in credentials for char in forbidden_chars):
             return False
         return True
-
-    def get_login_creds(self, payload):
-        """
-        Returns a regex match for login credentials in a
-        HTTP request
-
-        Args:
-            payload (bytes): HTTP payload, as bytes
-
-        Returns:
-            re.Match: Returns the match or none if not found
-        """
-        pattern = b"email=(?P<email>.*)&password=(?P<password>.*)&submit=Log\+In"
-        login_match = re.search(pattern, payload)
-        return login_match
-
-    def get_register_creds(self, payload):
-        """
-        Returns credentials used to register
-
-        Args:
-            payload (bytes): HTTP payload, as bytes
-
-        Returns:
-            list: [username, email, password] used for registering
-        """
-        pattern = b"username=(?P<username>.*)&email=(?P<email>.*)&password=(?P<password>.*)&confirm_password=.*&submit=Sign\+Up"
-        register_match = re.search(pattern, payload)
-        if not register_match:
-            return [None, None, None]
-        creds = [register_match.group("username"), register_match.group("email"), register_match.group("password")]
-        return [urllib.parse.unquote(cred.decode("utf-8")) for cred in creds]
-
-    def get_http_content(self, payload):
-        """
-        Returns a regex match for content in a
-        HTTP request
-
-        Args:
-            payload (bytes): TCP payload - HTTP request
-
-        Returns:
-            re.Match: Returns the match or none if not found
-        """
-        pattern = b"\r\n\r\n(?P<content>(.|\s)*)"
-        content_match = re.search(pattern, payload)
-        return content_match
 
     def add_new_user(self, username, email, image_file_name, password):
         url = f"http://{self.honeypot_ip}:50000"
         with ServerProxy(url, allow_none=True) as s:
             s.add_new_user(username, email, image_file_name, password)
-
-    def get_table(self, table_name):
-        return database.get_pretty_table(table_name)
-
-
-@dataclass
-class Request():
-    first_packet: pydivert.Packet
-    content_length: int
-    request_bytes: bytes

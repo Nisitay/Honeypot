@@ -1,8 +1,9 @@
 import scapy.all as scapy
 import random
 
-MAX_SEQUENCE_NUM = 4294967295
+MAX_SEQUENCE_NUM = 4294967295  # 2**32
 MAX_WINDOW_SIZE = 5900
+MAX_PAYLOAD_LENGTH = 1460  # MTU dependent
 
 
 class TCPSession():
@@ -28,10 +29,9 @@ class TCPSession():
         self.seq = random.randint(0, MAX_SEQUENCE_NUM)
         syn = self.ip / scapy.TCP(sport=self.src_port, dport=self.dst_port,
                                   flags="S", seq=self.seq, ack=self.ack,
-                                  options=[("MSS", 1460)])
+                                  options=[("MSS", MAX_PAYLOAD_LENGTH)])
         self.seq += 1
         syn_ack = self.s.sr1(syn, verbose=0)
-
         self.ack = syn_ack[scapy.TCP].seq + 1
         self._send_ack()
 
@@ -58,7 +58,7 @@ class TCPSession():
         self.seq = random.randint(0, MAX_SEQUENCE_NUM)
         syn_ack = self.ip / scapy.TCP(sport=self.src_port, dport=self.dst_port,
                                       flags="SA", seq=self.seq, ack=self.ack,
-                                      options=[("MSS", 1460)])
+                                      options=[("MSS", MAX_PAYLOAD_LENGTH)])
         self.s.send(syn_ack)
         self.seq += 1
 
@@ -81,9 +81,10 @@ class TCPSession():
         Args:
             payload_packet (pydivert.Packet): a pydivert packet
         """
-        self.ack += len(payload_packet.payload)
-        self.window += len(payload_packet.payload)
-        if len(payload_packet.payload) < 1460 or self.window >= MAX_WINDOW_SIZE:
+        payload_len = len(payload_packet.payload)
+        self.ack += payload_len
+        self.window += payload_len
+        if payload_len < MAX_PAYLOAD_LENGTH or self.window >= MAX_WINDOW_SIZE:
             self._send_ack()
             self.window = 0
 
@@ -105,7 +106,7 @@ class TCPSession():
         Args:
             payload (str/bytes): a TCP payload
         """
-        for payload in self._split_payload(payload):
+        for payload in self._split_payload(payload, MAX_PAYLOAD_LENGTH):
             p = self.ip / scapy.TCP(sport=self.src_port, dport=self.dst_port,
                                     flags="PA",
                                     seq=self.seq,
@@ -118,17 +119,17 @@ class TCPSession():
                                   flags="A", seq=self.seq, ack=self.ack)
         self.s.send(ack)
 
-    def _split_payload(self, payload):
+    def _split_payload(self, payload, max_len):
         """
         Receives a payload, splits it to a list of payloads,
         each with maximum length that can be sent.
 
         Args:
             payload (str/bytes): TCP payload
+            max_len (int): Max payload length
 
         Returns:
             generator: Generator of payloads
         """
-        max_payload_length = 1450  # MTU dependent
-        return (payload[i:i+max_payload_length]
-                for i in range(0, len(payload), max_payload_length))
+        return (payload[i:i+max_len]
+                for i in range(0, len(payload), max_len))

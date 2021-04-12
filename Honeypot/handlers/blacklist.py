@@ -6,17 +6,10 @@ class Blacklist():
     def __init__(self, file_path):
         self.file_path = file_path
         self.blacklist = []
-        self.initialize()
+        self._initialize()
 
     def __contains__(self, ip_addr):
         return ip_addr in self.blacklist
-
-    def initialize(self):
-        # Create file if doesn't exist/ Override if exists
-        open(self.file_path, "w").close()
-        with open(self.file_path, "r") as f:
-            ips_list = [line.rstrip("\n") for line in f]
-        self.blacklist.extend(ips_list)
 
     def add_address(self, ip_addr):
         self.blacklist.append(ip_addr)
@@ -31,3 +24,10 @@ class Blacklist():
         with open(self.file_path, "w") as f:
             for ip in new_ips_list:
                 f.write(ip + "\n")
+
+    def _initialize(self):
+        # Create file if doesn't exist/ Override if exists
+        open(self.file_path, "w").close()
+        with open(self.file_path, "r") as f:
+            ips_list = [line.rstrip("\n") for line in f]
+        self.blacklist.extend(ips_list)

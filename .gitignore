@@ -132,4 +132,11 @@ dmypy.json
 .vscode/
 
 # internal configuration
-Honeypot/handlers/config.py
+Honeypot/common/config.ini
+
+# GUI project
+Honeypot/main.pyproject*
+
+# GUI files
+Honeypot/qml/
+Honeypot/images/

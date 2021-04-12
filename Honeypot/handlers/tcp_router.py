@@ -1,12 +1,14 @@
 import threading
 import pydivert
-import logging
 import abc
 from abc import abstractmethod
+from collections import namedtuple
 
+from .logger import Logger
 from .blacklist import Blacklist
 from .syn_handler import SynHandler
-from .config import BLACKLIST_PATH, LOG_PATH, MAX_SYNS_ALLOWED
+
+ClientAddr = namedtuple("ClientAddr", ["ip", "port"])
 
 
 class TCPRouter(abc.ABC):
@@ -14,30 +16,32 @@ class TCPRouter(abc.ABC):
     Basic router structure to inherit from
     """
     def __init__(self, asset_ip, asset_port,
-                 honeypot_ip, honeypot_port, fake_asset_port):
+                 honeypot_ip, honeypot_port, fake_asset_port,
+                 log_path, blacklist_path, max_syns_allowed):
 
         self.asset_ip = asset_ip
         self.asset_port = asset_port
         self.honeypot_ip = honeypot_ip
         self.honeypot_port = honeypot_port
         self.fake_port = fake_asset_port
-        self.logger = self.initialize_logger()
 
         self._w = pydivert.WinDivert(f"tcp.DstPort == {self.fake_port} and inbound")
         self._running = threading.Event()
         self._handlers = [
-            threading.Thread(target=self.requests_handler, args=()),
-            threading.Thread(target=self.packets_handler, args=())
+            threading.Thread(target=self.requests_handler, args=(), daemon=True),
+            threading.Thread(target=self.packets_handler, args=(), daemon=True)
         ]
 
-        self.blacklist = Blacklist(BLACKLIST_PATH)
-        self.syns = SynHandler(MAX_SYNS_ALLOWED)
+        self.blacklist = Blacklist(blacklist_path)
+        self.syns = SynHandler(max_syns_allowed)
+        self.logger = Logger("TCP Router", log_path).get_logger()
 
     def start(self):
         self._running.set()
         self._w.open()
         for handler in self._handlers:
             handler.start()
+        self.logger.info("The router was started successfully")
 
     def packets_handler(self):
         """
@@ -115,25 +119,15 @@ class TCPRouter(abc.ABC):
         probable_os = os_mapper.get(closest_ttl).get(window_size)
         return probable_os if probable_os else "Unknown OS"
 
-    def initialize_logger(self):
-        """
-        Initializes the router logger,
-        and creates the log file if it doesn't exist/ overrides if it exists
+    def get_fingerprint(self, ip_addr, packet):
+        probable_os = self.fingerprint(packet)
+        self.logger.info(f"The OS of attacker at {ip_addr} is probably: {probable_os}")
 
-        Returns:
-            logging.Logger: router logger
-        """
-        open(LOG_PATH, "w").close()
-        logger = logging.getLogger(__name__)
-        logger.setLevel(logging.DEBUG)
-        formatter = logging.Formatter("%(name)s| %(asctime)s | %(levelname)s | %(message)s")
-        file_handler = logging.FileHandler(LOG_PATH)
-        file_handler.setLevel(logging.INFO)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-        return logger
+    def add_to_blacklist(self, ip_addr):
+        self.blacklist.add_address(ip_addr)
+        self.logger.info(f"{ip_addr} has been added to blacklist")
 
-    def unblock_ip(self, ip_addr):
+    def remove_from_blacklist(self, ip_addr):
         if ip_addr in self.blacklist:
             self.blacklist.remove_address(ip_addr)
             self.logger.info(f"IP address {ip_addr} was unblocked by the admin.")

@@ -1,17 +1,7 @@
 import socket
 
-# temporary, should be user input
-from ..config import (
-    FTP_ASSET_IP,
-    ASSET_FTP_PORT,
-    FTP_HONEYPOT_IP,
-    HONEYPOT_FTP_PORT
-)
-
 CRLF = "\r\n"
 B_CRLF = b"\r\n"
-ASSET_ADDR = (FTP_ASSET_IP, ASSET_FTP_PORT)
-HONEYPOT_ADDR = (FTP_HONEYPOT_IP, HONEYPOT_FTP_PORT)
 
 
 class FTPProxy():
@@ -20,21 +10,23 @@ class FTPProxy():
     using sockets and returns the answer.
     Connects to the asset at first, and able to convert to honeypot/server.
     """
-    def __init__(self):
-        self.target = ASSET_ADDR
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    def __init__(self, asset_addr, honeypot_addr):
+        self.asset_addr = asset_addr
+        self.honeypot_addr = honeypot_addr
+        self.target = self.asset_addr
         self.maxline = 8192
         self.encoding = "utf-8"
 
     @property
     def connected_to_asset(self):
-        return self.target == ASSET_ADDR
+        return self.target == self.asset_addr
 
     @property
     def connected_to_honeypot(self):
-        return self.target == HONEYPOT_ADDR
+        return self.target == self.honeypot_addr
 
     def connect(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.connect(self.target)
         self.file = self.sock.makefile("r")
 
@@ -47,7 +39,7 @@ class FTPProxy():
             to_honeypot (bool, optional): Defaults to False.
         """
         self.quit()
-        self.target = HONEYPOT_ADDR if to_honeypot else ASSET_ADDR
+        self.target = self.honeypot_addr if to_honeypot else self.asset_addr
         self.connect()
         self._get_multiline()  # skip banner
         self.login_anonymously()

@@ -1,17 +1,19 @@
 import sqlite3 as lite
-import pandas
 import datetime
 from threading import Lock
-from ..config import DATABASE_PATH, ASSET_DATABASE_PATH
+from .config import general_conf, http_conf
+from .singleton import Singleton
 
 
-class Database():
+class Database(metaclass=Singleton):
     def __init__(self):
         self.lock = Lock()
+        self.db_path = general_conf.database_path
+        self.asset_db_path = http_conf.asset_database_path
         self.create_tables()
 
     def execute(self, *args):
-        with self.lock, lite.connect(DATABASE_PATH) as connection:
+        with self.lock, lite.connect(self.db_path) as connection:
             cursor = connection.cursor()
             cursor.execute("PRAGMA foreign_keys = ON")
             cursor.execute(*args)
@@ -19,7 +21,7 @@ class Database():
             return cursor.lastrowid
 
     def fetch(self, *args):
-        with self.lock, lite.connect(DATABASE_PATH) as connection:
+        with self.lock, lite.connect(self.db_path) as connection:
             cursor = connection.cursor()
             cursor.execute(*args)
             return cursor.fetchall()
@@ -160,15 +162,19 @@ class Database():
         Returns:
             str
         """
-        with lite.connect(ASSET_DATABASE_PATH) as connection:
+        with lite.connect(self.asset_db_path) as connection:
             cursor = connection.cursor()
             cursor.execute("SELECT username FROM user WHERE email = ?", (email,))
             username = cursor.fetchall()
             return username[0][0] if username else None
 
-    # TODO: Change the method of retreiving the table data
-    def get_pretty_table(self, table_name):
-        with self.lock, lite.connect(DATABASE_PATH) as connection:
-            return pandas.read_sql_query(f"SELECT * FROM {table_name}", connection)
+    def get_attackers_ips(self):
+        ips = self.fetch("SELECT ip FROM attackers")
+        return [tup[0] for tup in ips]
+
+    def get_attacker_data(self, ip):
+        row = self.fetch("SELECT os, attacks_num FROM attackers WHERE ip = ?",
+                         (ip,))[0]
+        return [row[0], row[1]]
 
 database = Database()
