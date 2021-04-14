@@ -1,12 +1,14 @@
 import threading
 import pydivert
+import queue
 import abc
+import scapy.all as scapy
 from abc import abstractmethod
 from collections import namedtuple
 
-from .logger import Logger
-from .blacklist import Blacklist
-from .syn_handler import SynHandler
+from ..logger import Logger
+from ..blacklist import Blacklist
+from ..syn_handler import SynHandler
 
 ClientAddr = namedtuple("ClientAddr", ["ip", "port"])
 
@@ -32,24 +34,38 @@ class TCPRouter(abc.ABC):
             threading.Thread(target=self.packets_handler, args=(), daemon=True)
         ]
 
+        self.requests_to_handle = queue.Queue()
         self.blacklist = Blacklist(blacklist_path)
         self.syns = SynHandler(max_syns_allowed)
         self.logger = Logger("TCP Router", log_path).get_logger()
 
     def start(self):
-        self._running.set()
-        self._w.open()
-        for handler in self._handlers:
-            handler.start()
-        self.logger.info("The router was started successfully")
+        if not self._running.is_set():
+            self._running.set()
+            self._w.open()
+            for handler in self._handlers:
+                handler.start()
+            self.logger.info("The router was started successfully")
+
+    def stop(self):
+        if self._running.is_set():
+            self._running.clear()
+            scapy.send(scapy.IP(dst="127.0.0.1") /
+                       scapy.TCP(sport=40000, dport=self.fake_port), verbose=0)
+            self._w.close()
+            self.requests_to_handle.put(None)
+            self.logger.info("The router was stopped successfully")
 
     def packets_handler(self):
         """
         Sends syn/fin/ack/payload packets to their corresponding handlers,
         and detects DOS attacks
         """
-        while self._running.isSet():
+        while self._running.is_set():
             packet = self._w.recv()
+
+            if packet.src_addr == "127.0.0.1":
+                break
 
             if len(packet.payload) > 1 and packet.tcp.ack:
                 self.handle_payload_packet(packet)

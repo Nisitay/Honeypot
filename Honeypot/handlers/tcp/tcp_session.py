@@ -35,6 +35,18 @@ class TCPSession():
         self.ack = syn_ack[scapy.TCP].seq + 1
         self._send_ack()
 
+    def disconnect(self):
+        """
+        Disconnects from the target (sends fin-ack/ack)
+        """
+        fin_ack = self.ip / scapy.TCP(sport=self.src_port, dport=self.dst_port,
+                                      flags="FA", seq=self.seq, ack=self.ack)
+        self.s.send(fin_ack)
+        self.seq += 1
+        self.ack += 1
+        self._send_ack()
+        self.s.close()
+
     def register_syn_ack(self, syn_ack_packet):
         """
         Receives a syn-ack packet and finishes the handshake
@@ -61,18 +73,6 @@ class TCPSession():
                                       options=[("MSS", MAX_PAYLOAD_LENGTH)])
         self.s.send(syn_ack)
         self.seq += 1
-
-    def disconnect(self):
-        """
-        Disconnects from the target (sends fin-ack/ack)
-        """
-        fin_ack = self.ip / scapy.TCP(sport=self.src_port, dport=self.dst_port,
-                                      flags="FA", seq=self.seq, ack=self.ack)
-        self.s.send(fin_ack)
-        self.seq += 1
-        self.ack += 1
-        self._send_ack()
-        self.s.close()
 
     def register_payload_packet(self, payload_packet):
         """

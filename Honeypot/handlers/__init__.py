@@ -1,4 +1,3 @@
-from .tcp_router import TCPRouter, ClientAddr
-from .tcp_session import TCPSession
+from .tcp import TCPRouter, TCPSession, ClientAddr
 from .ftp import FTPRouter
 from .http import HTTPRouter

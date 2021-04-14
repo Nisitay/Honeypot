@@ -1,13 +1,10 @@
 import pydivert
 import urllib
-import socket
-import queue
-import re
 from dataclasses import dataclass
 from xmlrpc.client import ServerProxy
 
 from .. import TCPRouter, TCPSession, ClientAddr
-from ..logger import Logger, HTTPGuiLogger
+from ..logger import Logger
 from .http_proxy import HTTPProxy
 from ..database import database
 from .http_request import HTTPRequest
@@ -28,8 +25,7 @@ class HTTPRouter(TCPRouter):
         super().__init__(*args, **kwargs)
         self.logged_into_hp = set()
         self.sessions = {}
-        self.requests_to_handle = queue.Queue()
-        self.logger = Logger("HTTP Router", kwargs["log_path"], extra_handlers=[HTTPGuiLogger()]).get_logger()
+        self.logger = Logger("HTTP Router", kwargs["log_path"]).get_logger()
 
     def handle_syn_packet(self, packet):
         session = TCPSession(self.asset_ip, self.fake_port, packet.src_addr, packet.src_port)
@@ -58,8 +54,11 @@ class HTTPRouter(TCPRouter):
         registers incoming packets, and handles the HTTP
         requests once they are finished.
         """
-        while self._running.isSet():
+        while self._running.is_set():
             packet = self.requests_to_handle.get()
+            if not isinstance(packet, pydivert.Packet):  # Router Stopped
+                break
+
             client_addr = ClientAddr(packet.src_addr, packet.src_port)
             session = self.sessions[client_addr]
             self.register_packet(packet)

@@ -4,7 +4,7 @@ import queue
 from dataclasses import dataclass
 
 from .. import TCPRouter, TCPSession, ClientAddr
-from ..logger import Logger, FTPGuiLogger
+from ..logger import Logger
 from ..database import database
 from .ftp_proxy import FTPProxy
 
@@ -20,15 +20,13 @@ class FTPSession:
 class FTPRouter(TCPRouter):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-        self.commands_to_handle = queue.Queue()
         self.sessions = {}
         self.server_sends_data = {b"NLST", b"LIST", b"RETR"}
         self.client_sends_data = {b"STOR"}
         self.data_channel_commands = self.server_sends_data.union(self.client_sends_data)
         self.whitelist_addresses = {}
         self.whitelist_passwords = {b"itay123", b"itayking"}
-        self.logger = Logger("FTP Router", kwargs["log_path"], extra_handlers=[FTPGuiLogger()]).get_logger()
+        self.logger = Logger("FTP Router", kwargs["log_path"]).get_logger()
 
     def handle_syn_packet(self, packet):
         session = TCPSession(self.asset_ip, self.fake_port, packet.src_addr, packet.src_port)
@@ -45,7 +43,7 @@ class FTPRouter(TCPRouter):
     def handle_payload_packet(self, packet):
         client_addr = ClientAddr(packet.src_addr, packet.src_port)
         self.sessions[client_addr].tcp_session.register_payload_packet(packet)
-        self.commands_to_handle.put(packet)
+        self.requests_to_handle.put(packet)
 
     def handle_fin_packet(self, packet):
         client_addr = ClientAddr(packet.src_addr, packet.src_port)
@@ -58,8 +56,11 @@ class FTPRouter(TCPRouter):
         registers incoming packets, and handles the HTTP
         requests once they are finished.
         """
-        while self._running.isSet():
-            packet = self.commands_to_handle.get()
+        while self._running.is_set():
+            packet = self.requests_to_handle.get()
+            if not isinstance(packet, pydivert.Packet):  # Router Stopped
+                break
+
             src_ip = packet.src_addr
             client_addr = ClientAddr(src_ip, packet.src_port)
 
