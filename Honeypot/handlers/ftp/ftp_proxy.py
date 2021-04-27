@@ -4,7 +4,7 @@ CRLF = "\r\n"
 B_CRLF = b"\r\n"
 
 
-class FTPProxy():
+class FTPProxy:
     """
     Handles connection with the FTP asset/honeypot - sends raw FTP commands
     using sockets and returns the answer.
@@ -15,7 +15,6 @@ class FTPProxy():
         self.honeypot_addr = honeypot_addr
         self.target = self.asset_addr
         self.maxline = 8192
-        self.encoding = "utf-8"
 
     @property
     def connected_to_asset(self):
@@ -62,7 +61,7 @@ class FTPProxy():
         """
         return self._get_multiline()
 
-    def send_cmd(self, cmd):
+    def send_cmd(self, cmd: bytes):
         """
         Send a command and return the response
 
@@ -158,7 +157,7 @@ class FTPProxy():
                     break
         return lines
 
-    def _send_port_command(self, host, port):
+    def _send_port_command(self, host: str, port: int):
         """Sends a PORT command to the server to open a data channel.
 
         Args:
@@ -171,7 +170,7 @@ class FTPProxy():
         hbytes = host.split('.')
         pbytes = [repr(port//256), repr(port%256)]
         cmd = "PORT " + ",".join(hbytes + pbytes) + CRLF
-        response = self.send_cmd(cmd.encode(self.encoding))
+        response = self.send_cmd(cmd.encode())
         return response
 
     def _send_command(self, cmd):

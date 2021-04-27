@@ -5,8 +5,8 @@ class Singleton(type):
         """
         Returns an instance if exists, otherwise returns a new instance
 
-        Returns:
-            instance: a class instance
+        :return: a class instance
+        :rtype: instance
         """
         if cls not in cls._instances:
             cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)

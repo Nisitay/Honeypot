@@ -6,7 +6,7 @@ MAX_WINDOW_SIZE = 5900
 MAX_PAYLOAD_LENGTH = 1460  # MTU dependent
 
 
-class TCPSession():
+class TCPSession:
     """
     Handles a TCP session between a source and a target, using scapy
     """
@@ -88,7 +88,7 @@ class TCPSession():
             self._send_ack()
             self.window = 0
 
-    def sendall(self, payloads):
+    def sendall(self, payloads: list):
         """
         Receives a list of payloads to send, and sends them
 
@@ -98,7 +98,7 @@ class TCPSession():
         for payload in payloads:
             self.send(payload)
 
-    def send(self, payload):
+    def send(self, payload: str):
         """
         Receives a payload and sends it to the client.
         Payloads bigger than MTU will be split to multiple packets
@@ -119,7 +119,7 @@ class TCPSession():
                                   flags="A", seq=self.seq, ack=self.ack)
         self.s.send(ack)
 
-    def _split_payload(self, payload, max_len):
+    def _split_payload(self, payload: str, max_len: int):
         """
         Receives a payload, splits it to a list of payloads,
         each with maximum length that can be sent.

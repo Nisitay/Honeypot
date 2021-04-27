@@ -12,9 +12,8 @@ from .utils import finished_request, get_login_creds, get_register_creds, get_co
 
 
 @dataclass
-class HTTPSession():
+class HTTPSession:
     tcp_session: TCPSession
-    sample_packet: pydivert.Packet  # TODO: check if necessary
     http_server: HTTPProxy
     content_length: int = 0
     request_bytes: bytes = b""
@@ -25,7 +24,7 @@ class HTTPRouter(TCPRouter):
         super().__init__(*args, **kwargs)
         self.logged_into_hp = set()
         self.sessions = {}
-        self.logger = Logger("HTTP Router", kwargs["log_path"]).get_logger()
+        self.logger = Logger("HTTP Router").get_logger()
 
     def handle_syn_packet(self, packet):
         session = TCPSession(self.asset_ip, self.fake_port, packet.src_addr, packet.src_port)
@@ -33,7 +32,7 @@ class HTTPRouter(TCPRouter):
         client_addr = ClientAddr(packet.src_addr, packet.src_port)
         http_server = HTTPProxy((self.asset_ip, self.asset_port), (self.honeypot_ip, self.honeypot_port))
         http_server.connect()
-        self.sessions[client_addr] = HTTPSession(session, packet, http_server)
+        self.sessions[client_addr] = HTTPSession(session, http_server)
 
     def handle_payload_packet(self, packet):
         client_addr = ClientAddr(packet.src_addr, packet.src_port)
@@ -140,7 +139,6 @@ class HTTPRouter(TCPRouter):
         client_addr = ClientAddr(packet.src_addr, packet.src_port)
         session = self.sessions[client_addr]
         if not session.request_bytes:
-            #request_headers = HTTPRequest(payload)
             session.content_length = get_content_length(payload)
         session.request_bytes += payload
 
@@ -163,11 +161,13 @@ class HTTPRouter(TCPRouter):
 
         if from_honeypot and http_server.connected_to_asset:
             http_server.convert_server(to_honeypot=True)
+        elif not from_honeypot and http_server.connected_to_honeypot:
+            http_server.convert_server(to_asset=True)
         response = http_server.send_request(payload)
         self.sessions[client_addr].tcp_session.send(response)
         return response
 
-    def valid_payload(self, payload):
+    def valid_payload(self, payload: bytes) -> bool:
         """
         Receives a HTTP payload as bytes,
         and checks it for SQL injection
@@ -189,7 +189,7 @@ class HTTPRouter(TCPRouter):
             return False
         return True
 
-    def add_new_user(self, username, email, image_file_name, password):
+    def add_new_user(self, username, email, image_filename, password):
         url = f"http://{self.honeypot_ip}:50000"
         with ServerProxy(url, allow_none=True) as s:
-            s.add_new_user(username, email, image_file_name, password)
+            s.add_new_user(username, email, image_filename, password)

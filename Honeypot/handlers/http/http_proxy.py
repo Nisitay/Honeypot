@@ -5,7 +5,7 @@ HTTP_HEADER_DELIMITER = b"\r\n\r\n"
 CONTENT_LENGTH_FIELD = b"Content-Length:"
 
 
-class HTTPProxy():
+class HTTPProxy:
     def __init__(self, asset_addr, honeypot_addr):
         self.asset_addr = asset_addr
         self.honeypot_addr = honeypot_addr
@@ -28,7 +28,7 @@ class HTTPProxy():
         self.target = self.honeypot_addr if to_honeypot else self.asset_addr
         self.connect()
 
-    def send_request(self, request):
+    def send_request(self, request: bytes) -> bytes:
         """
         Sends an HTTP request and returns the HTTP response.
 
@@ -41,7 +41,7 @@ class HTTPProxy():
         self._send(request)
         return self.get_response()
 
-    def get_response(self):
+    def get_response(self) -> bytes:
         """
         Reads a full HTTP response
 
@@ -84,13 +84,13 @@ class HTTPProxy():
             length += len(chunk)
         return data
 
-    def _end_of_header(self, length, data):
+    def _end_of_header(self, length: int, data: bytes) -> bool:
         """
         Returns true if data contains the end-of-header marker.
         """
         return b"\r\n\r\n" in data
 
-    def _end_of_content(self, length, data):
+    def _end_of_content(self, length: int, data: bytes) -> bool:
         """
         Returns true if length does not fullfil the content length.
         """

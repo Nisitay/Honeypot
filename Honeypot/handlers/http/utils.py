@@ -2,7 +2,7 @@ import re
 from urllib.parse import unquote
 
 
-def get_http_content(payload):
+def get_http_content(payload: bytes) -> re.Match:
     """
     Returns a regex match for content in a
     HTTP request
@@ -17,7 +17,7 @@ def get_http_content(payload):
     return re.search(pattern, payload)
 
 
-def get_content_length(header):
+def get_content_length(header: bytes) -> int:
     """
     Returns the content length found in the given
     payload.
@@ -33,7 +33,7 @@ def get_content_length(header):
     return int(match.group("content_length")) if match else 0
 
 
-def get_login_creds(payload):
+def get_login_creds(payload: bytes) -> re.Match:
     """
     Returns a regex match for login credentials in an
     HTTP request
@@ -48,7 +48,7 @@ def get_login_creds(payload):
     return re.search(pattern, payload)
 
 
-def get_register_creds(payload):
+def get_register_creds(payload: bytes) -> list:
     """
     Returns credentials used within the payload to register.
 
@@ -65,7 +65,7 @@ def get_register_creds(payload):
     return [unquote(cred.decode()) for cred in register_match.groups()]
 
 
-def finished_request(payload, content_length):
+def finished_request(payload: str, content_length: int) -> bool:
     """
     Checks whether an HTTP request is finished
 

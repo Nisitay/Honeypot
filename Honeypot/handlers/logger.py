@@ -1,15 +1,14 @@
 import logging
 from .gui import GUI
 
+LOG_PATH = r"Honeypot\common\app.log"
 LOG_FORMAT = "%(levelname)s | %(asctime)s | %(name)s: %(message)s"
 
 loggers = {}
 
 
-class Logger():
-    def __init__(self, name, log_path):
-        self.log_path = log_path
-
+class Logger:
+    def __init__(self, name: str):
         if loggers.get(name):
             self._logger = loggers.get(name)
         else:
@@ -20,12 +19,11 @@ class Logger():
 
     def initialize_handlers(self):
         logger_handlers = [
-            logging.FileHandler(self.log_path),
-            logging.StreamHandler(),
+            logging.FileHandler(LOG_PATH),
             GuiLogger()
         ]
         for handler in logger_handlers:
-            handler.setFormatter(logging.Formatter(fmt=LOG_FORMAT, datefmt="%d-%m-%Y,%H:%M:%S"))
+            handler.setFormatter(logging.Formatter(fmt=LOG_FORMAT, datefmt="%d/%m/%Y,%H:%M:%S"))
             self._logger.addHandler(handler)
 
     def get_logger(self):
@@ -36,6 +34,6 @@ class GuiLogger(logging.Handler):
     def __init__(self):
         super().__init__()
 
-    def emit(self, record):
+    def emit(self, record: str):
         msg = self.format(record)
         GUI.add_log(msg)

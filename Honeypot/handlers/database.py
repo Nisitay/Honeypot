@@ -1,19 +1,21 @@
 import sqlite3 as lite
 import datetime
 from threading import Lock
-from .config import general_conf, http_conf
+from .config import http_conf
+from .gui import GUI
 from .singleton import Singleton
+
+DATABASE_PATH = r"Honeypot\common\Database.db"
 
 
 class Database(metaclass=Singleton):
     def __init__(self):
-        self.lock = Lock()
-        self.db_path = general_conf.database_path
+        self._lock = Lock()
         self.asset_db_path = http_conf.asset_database_path
         self.create_tables()
 
     def execute(self, *args):
-        with self.lock, lite.connect(self.db_path) as connection:
+        with self._lock, lite.connect(DATABASE_PATH) as connection:
             cursor = connection.cursor()
             cursor.execute("PRAGMA foreign_keys = ON")
             cursor.execute(*args)
@@ -21,7 +23,7 @@ class Database(metaclass=Singleton):
             return cursor.lastrowid
 
     def fetch(self, *args):
-        with self.lock, lite.connect(self.db_path) as connection:
+        with self._lock, lite.connect(DATABASE_PATH) as connection:
             cursor = connection.cursor()
             cursor.execute(*args)
             return cursor.fetchall()
@@ -61,14 +63,10 @@ class Database(metaclass=Singleton):
             """
         )
 
-    def add_attacker(self, attacker_ip, probable_os):
+    def add_attacker(self, attacker_ip: str, probable_os: str):
         """
         Adds an attacker to the database, or increments his
         number of attacks if he already exists.
-
-        Args:
-            attacker_ip (str)
-            probable_os (str)
         """
         attacker_exists = self.fetch("SELECT * FROM attackers WHERE ip = ?",
                                      (attacker_ip,))
@@ -77,21 +75,11 @@ class Database(metaclass=Singleton):
                                      (attacker_ip,))[0][0]
             self.execute("UPDATE attackers SET attacks_num = ? WHERE ip = ?",
                          (attacks_num + 1, attacker_ip))
+            GUI.increment_attacks_num(attacker_ip)
         else:
             self.execute("INSERT INTO attackers (ip, os, attacks_num) VALUES (?, ?, ?)",
                          (attacker_ip, probable_os, 1))
-
-    def remove_attacker(self, attacker_ip):
-        """
-        Removes an attacker from the database and the attacks
-        associated with him.
-
-        Args:
-            attacker_ip (str)
-        """
-        attacker_id = self.fetch("SELECT id from attackers WHERE ip = ?",
-                                 (attacker_ip,))[0][0]
-        self.execute("DELETE FROM attackers WHERE id = ?", (attacker_id,))
+            GUI.add_attacker(attacker_ip, probable_os)
 
     def add_attack(self, attacker_ip, attacker_port, description):
         """
@@ -107,60 +95,38 @@ class Database(metaclass=Singleton):
                                  (attacker_ip,))[0][0]
         self.execute("INSERT INTO attacks (attacker, port, date, description) VALUES (?, ?, ?, ?)",
                      (attacker_id, attacker_port, system_time, description))
+        GUI.add_attack(attacker_ip, attacker_port, system_time, description)
 
-    def is_allowed(self, ip, username):
+    def is_allowed(self, ip: str, username: str) -> bool:
         """
         Checks whether an IP address is allowed to log into
         an account with the given username.
-
-        Args:
-            ip (str)
-            username (str)
-
-        Returns:
-            bool
         """
         exists = self.fetch("SELECT * FROM allowed_users WHERE ip = ? AND username = ?",
                             (ip, username))
         return exists
 
-    def has_allowed(self, ip):
+    def has_allowed(self, ip: str) -> bool:
         """
         Checks whether the IP address has a username
         it's allowed to log into.
-
-        Args:
-            ip (str)
-
-        Returns:
-            bool
         """
         exists = self.fetch("SELECT * FROM allowed_users WHERE ip = ?",
                             (ip,))
         return exists
 
-    def add_allowed(self, ip, username):
+    def add_allowed(self, ip: str, username: str):
         """
         Adds an allowed username to log into for
         a given IP address.
-
-        Args:
-            ip (str)
-            username (str)
         """
         self.execute("INSERT INTO allowed_users (ip, username) VALUES (?, ?)",
                      (ip, username))
 
-    def get_username(self, email):
+    def get_username(self, email: str):
         """
         Returns the username associated with the
         email address in the asset database.
-
-        Args:
-            email (str)
-
-        Returns:
-            str
         """
         with lite.connect(self.asset_db_path) as connection:
             cursor = connection.cursor()
@@ -168,13 +134,13 @@ class Database(metaclass=Singleton):
             username = cursor.fetchall()
             return username[0][0] if username else None
 
-    def get_attackers_ips(self):
-        ips = self.fetch("SELECT ip FROM attackers")
-        return [tup[0] for tup in ips]
+    def get_attackers_data(self):
+        data = self.fetch("SELECT ip, os, attacks_num FROM attackers")
+        return [list(ele) for ele in data]
 
-    def get_attacker_data(self, ip):
-        row = self.fetch("SELECT os, attacks_num FROM attackers WHERE ip = ?",
-                         (ip,))[0]
-        return [row[0], row[1]]
+    def get_attacks_data(self):
+        data = self.fetch("""SELECT attackers.ip, attacks.port, attacks.date, attacks.description
+        FROM attacks INNER JOIN attackers ON attackers.id = attacks.attacker""")
+        return [list(ele) for ele in data][::-1]
 
 database = Database()
