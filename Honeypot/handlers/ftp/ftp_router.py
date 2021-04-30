@@ -3,14 +3,14 @@ import pydivert
 import queue
 from dataclasses import dataclass
 
-from .. import TCPRouter, TCPSession, ClientAddr
-from ..logger import Logger
-from ..database import database
+from .. import database, Logger
+from ..tcp import TCPRouter, TCPSession, ClientAddr
 from .ftp_proxy import FTPProxy
 
 
 @dataclass
 class FTPSession:
+    syn_packet: pydivert.Packet
     tcp_session: TCPSession
     ftp_server: FTPProxy
     data_commands: queue.Queue
@@ -38,7 +38,7 @@ class FTPRouter(TCPRouter):
         session.sendall(banner_messages)
 
         client_addr = ClientAddr(packet.src_addr, packet.src_port)
-        self.sessions[client_addr] = FTPSession(session, ftp_proxy, queue.Queue())
+        self.sessions[client_addr] = FTPSession(packet, session, ftp_proxy, queue.Queue())
 
     def handle_payload_packet(self, packet):
         client_addr = ClientAddr(packet.src_addr, packet.src_port)
@@ -75,10 +75,10 @@ class FTPRouter(TCPRouter):
                         self.sessions[client_addr].ftp_server.convert_server(to_asset=True)
                 else:  # attacker, convert him to the ftp honeypot
                     self.logger.info(f"Detected suspicious user from IP {src_ip}.")
-                    if src_ip not in self.blacklist:
-                        self.add_to_blacklist(src_ip)
-                    database.add_attacker(src_ip, self.fingerprint(packet))
-                    database.add_attack(src_ip, packet.src_port, "Used unpermitted password to use FTP server.")
+                    self.add_to_blacklist(src_ip)
+                    desc = "Used unpermitted password to use FTP server."
+                    syn = self.sessions[client_addr].syn_packet
+                    self.add_attack(src_ip, packet.src_port, syn, desc)
                     if self.sessions[client_addr].ftp_server.connected_to_asset:
                         self.sessions[client_addr].ftp_server.convert_server(to_honeypot=True)
 

@@ -1,13 +1,16 @@
 import threading
 import pydivert
 import queue
+import time
 import scapy.all as scapy
 from abc import ABC, abstractmethod
 from collections import namedtuple
 
 from ..logger import Logger
 from ..blacklist import Blacklist
+from ..database import database
 from .syn_handler import SynHandler
+from .fingerprint import p0f
 
 ClientAddr = namedtuple("ClientAddr", ["ip", "port"])
 
@@ -93,11 +96,13 @@ class TCPRouter(ABC):
             elif packet.tcp.fin:
                 self.handle_fin_packet(packet)
 
-            else:  # ACK
+            elif packet.tcp.ack and not packet.tcp.rst:  # ACK
                 self.syns.register_ack(packet.src_addr)
 
             if self.syns.is_syn_flooding(packet.src_addr):
-                self.logger.warning(f"DOS attack (SYN flood) detected from {packet.src_addr}:{packet.src_port}")
+                self.logger.warning(f"DOS attack (SYN flood) detected from {packet.src_addr}:{packet.src_port}. Pausing router...")
+                time.sleep(30)
+                self.logger.info("The router has been resumed")
 
     @abstractmethod
     def requests_handler(self):
@@ -115,45 +120,32 @@ class TCPRouter(ABC):
     def handle_fin_packet(self, packet: pydivert.Packet):
         pass
 
-    def fingerprint(self, packet: pydivert.Packet):
+    def add_attack(self, src_addr, src_port, packet, description):
         """
-        Passive OS fingerprint - calculates the most probable operating system
-        of the packet source, based on the packets' closest original TTL and
-        window size.
+        Starts a new thread to perform passive fingerprint
+        on the packet, then adds the attacker to the database
+        and then the attack.
 
         Args:
-            packet (pydivert packet):
-
-        Returns:
-            str: A string of the most probable OS
+            src_addr (str): IP address
+            src_port (int): Port number
+            packet (pydivert.Packet): SYN packet
+            description (str): Attack description
         """
-        ttl = packet.ipv4.ttl
-        window_size = packet.tcp.window_size
-        os_mapper = {
-            64: {
-                5720: "Google's customized Linux",
-                5840: "Linux (kernel 2.4 and 2.6)",
-                16384: "OpenBSD, AIX 4.3",
-                32120: "Linux (kernel 2.2)",
-                65535: "FreeBSD"
-            },
-            128: {
-                8192: "Windows 7, Vista, and Server 2008",
-                16384: "Windows 2000",
-                65535: "Windows XP"
-            },
-            255: {
-                4128: "Cisco Router (IOS 12.4)",
-                8760: "Solaris 7"
-            }
-        }
-        closest_ttl = min(filter(lambda x: x >= ttl, os_mapper.keys()))
-        probable_os = os_mapper.get(closest_ttl).get(window_size)
-        return probable_os if probable_os else "Unknown OS"
+        def action(src_addr, src_port, packet, description):
+            os = p0f(packet)
+            if os != "Unknown OS":
+                self.logger.info(f"The OS of attacker at {src_addr} is '{os}'")
+            database.add_attacker(src_addr, os)
+            database.add_attack(src_addr, src_port, description)
+
+        t = threading.Thread(target=action, args=(src_addr, src_port, packet, description))
+        t.start()
 
     def add_to_blacklist(self, ip_addr):
-        self.blacklist.add_address(ip_addr)
-        self.logger.info(f"{ip_addr} has been added to blacklist")
+        if ip_addr not in self.blacklist:
+            self.blacklist.add_address(ip_addr)
+            self.logger.info(f"{ip_addr} has been added to blacklist")
 
     def update_settings(self, asset_ip, asset_port,
                         honeypot_ip, honeypot_port, fake_asset_port):

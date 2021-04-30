@@ -3,16 +3,17 @@ import urllib
 from dataclasses import dataclass
 from xmlrpc.client import ServerProxy
 
-from .. import TCPRouter, TCPSession, ClientAddr
-from ..logger import Logger
+from .. import database, Logger
+from ..tcp import TCPRouter, TCPSession, ClientAddr
 from .http_proxy import HTTPProxy
-from ..database import database
 from .http_request import HTTPRequest
-from .utils import finished_request, get_login_creds, get_register_creds, get_content_length
+from .utils import finished_request, get_login_creds, get_register_creds, \
+    get_content_length
 
 
 @dataclass
 class HTTPSession:
+    syn_packet: pydivert.Packet
     tcp_session: TCPSession
     http_server: HTTPProxy
     content_length: int = 0
@@ -32,7 +33,7 @@ class HTTPRouter(TCPRouter):
         client_addr = ClientAddr(packet.src_addr, packet.src_port)
         http_server = HTTPProxy((self.asset_ip, self.asset_port), (self.honeypot_ip, self.honeypot_port))
         http_server.connect()
-        self.sessions[client_addr] = HTTPSession(session, http_server)
+        self.sessions[client_addr] = HTTPSession(packet, session, http_server)
 
     def handle_payload_packet(self, packet):
         client_addr = ClientAddr(packet.src_addr, packet.src_port)
@@ -62,19 +63,18 @@ class HTTPRouter(TCPRouter):
             session = self.sessions[client_addr]
             self.register_packet(packet)
             if finished_request(session.request_bytes, session.content_length):
-                self.handle_http_request(session.request_bytes, packet)
+                self.handle_http_request(session.request_bytes, session.syn_packet)
                 session.content_length = 0
                 session.request_bytes = b""
 
-    def handle_http_request(self, request_bytes, packet):
+    def handle_http_request(self, full_payload, packet):
         """
         Handles a finished HTTP request
 
         Args:
-            request_bytes (bytes) : Full HTTP request.
-            packet (pydivert.Packet)
+            full_payload (bytes) : Full HTTP request.
+            packet (pydivert.Packet) : Syn packet
         """
-        full_payload = request_bytes
         src_addr = packet.src_addr
         src_port = packet.src_port
         request_headers = HTTPRequest(full_payload)
@@ -85,14 +85,9 @@ class HTTPRouter(TCPRouter):
 
         elif not self.valid_payload(full_payload):
             self.logger.warning(f"SQL Injection attack was caught from {src_addr}:{src_port}")
-            probable_os = self.fingerprint(packet)
-
-            if src_addr not in self.blacklist:
-                self.add_to_blacklist(src_addr)
-                self.logger.info(f"The OS of attacker at {src_addr} is probably: {probable_os}")
-
-            database.add_attacker(src_addr, probable_os)
-            database.add_attack(src_addr, src_port, "Attempted SQL Injection attack")
+            self.add_to_blacklist(src_addr)
+            description = "Attempted SQL Injection attack"
+            self.add_attack(src_addr, src_port, packet, description)
             self.logged_into_hp.add(src_addr)
             self.send_response(src_addr, src_port, full_payload, from_honeypot=True)
 
@@ -103,13 +98,10 @@ class HTTPRouter(TCPRouter):
                 if database.is_allowed(src_addr, username) and src_addr not in self.blacklist:
                     self.send_response(src_addr, src_port, full_payload)
                 else:
-                    if src_addr not in self.blacklist:
-                        self.add_to_blacklist(src_addr)
-                    probable_os = self.fingerprint(packet)
                     self.logger.warning(f"{src_addr} has logged in to a shadowed account.")
-                    database.add_attacker(src_addr, probable_os)
-                    database.add_attack(src_addr, src_port,
-                                        "Attempted to log into a prohibited account")
+                    self.add_to_blacklist(src_addr)
+                    description = "Attempted to log into a prohibited account"
+                    self.add_attack(src_addr, src_port, packet, description)
                     self.logged_into_hp.add(src_addr)
                     self.send_response(src_addr, src_port, full_payload, from_honeypot=True)
             else:

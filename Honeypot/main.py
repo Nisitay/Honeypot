@@ -3,11 +3,7 @@ from PyQt5.QtGui import QGuiApplication
 from PyQt5.QtQml import QQmlApplicationEngine
 from PyQt5.QtCore import QObject, pyqtSlot, pyqtSignal, QVariant
 
-from .handlers import FTPRouter, HTTPRouter
-from .handlers.gui import GUI
-from .handlers.logger import Logger
-from .handlers.database import database
-from .handlers.blacklist import Blacklist
+from .handlers import FTPRouter, HTTPRouter, Blacklist, GUI, Logger, database
 from .handlers.tcp.syn_handler import SynHandler
 from .handlers.config import general_conf, ftp_conf, http_conf
 
@@ -212,7 +208,7 @@ if __name__ == "__main__":
     app.setOrganizationDomain(" ")
 
     main_window = MainWindow()
-    GUI.main = main_window
+    GUI.main_window = main_window
     engine = QQmlApplicationEngine()
     root = engine.rootContext()
 
