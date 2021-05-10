@@ -4,15 +4,17 @@ from PyQt5.QtQml import QQmlApplicationEngine
 from PyQt5.QtCore import QObject, pyqtSlot, pyqtSignal, QVariant
 
 from .handlers import FTPRouter, HTTPRouter, Blacklist, GUI, Logger, database
-from .handlers.tcp.syn_handler import SynHandler
-from .handlers.config import general_conf, ftp_conf, http_conf
+from .handlers.config import ftp_conf, http_conf
 
 
 class MainWindow(QObject):
     def __init__(self):
         super().__init__()
+        with open(r"Honeypot/common/password.txt", "r") as f:
+            self.verification_password = f.read().strip()
+
         self.blacklist = Blacklist()
-        self.logger = Logger("Router Admin").get_logger()
+        self.logger = Logger("System Admin").get_logger()
 
         ftp_router_config = ftp_conf.asdict()
         self.ftp_router = FTPRouter(**ftp_router_config)
@@ -27,6 +29,7 @@ class MainWindow(QObject):
     addAttacker = pyqtSignal(QVariant)  # Add new attacker to GUI
     addAttack = pyqtSignal(QVariant)  # Add new attack to GUI
     incrementAttack = pyqtSignal(str)  # Increments attacks_num on GUI for IP
+    verified = pyqtSignal()  # Show app if user is verified as administrator
 
     def stop_routers(self):
         """
@@ -51,26 +54,14 @@ class MainWindow(QObject):
     def stop_http_router(self):
         self.http_router.stop()
 
-    @pyqtSlot(int, result=bool)
-    def update_general_settings(self, max_syns_allowed: int) -> bool:
-        """
-        Updates the general settings
+    @pyqtSlot(str)
+    def verify_admin(self, password):
+        if password == self.verification_password:
+            self.verified.emit()
 
-        Args:
-            max_syns_allowed (int)
-
-        Returns:
-            bool: Whether the settings were updated
-        """
-        if self.ftp_router.running or self.http_router.running:
-            return False
-        general_conf.update_settings(max_syns_allowed)
-        SynHandler.max_syns_allowed = max_syns_allowed
-        return True
-
-    @pyqtSlot(str, int, str, int, int, result=bool)
+    @pyqtSlot(str, int, str, int, int, int, result=bool)
     def update_ftp_settings(self, asset_ip, asset_port, honeypot_ip,
-                            honeypot_port, fake_asset_port):
+                            honeypot_port, fake_asset_port, max_syns_allowed):
         """
         Updates the FTP settings
 
@@ -79,7 +70,7 @@ class MainWindow(QObject):
             asset_port (int)
             honeypot_ip (str)
             honeypot_port (int)
-            fake_asset_port (nt)
+            fake_asset_port (int)
 
         Returns:
             bool: Whether the settings were updated
@@ -87,14 +78,17 @@ class MainWindow(QObject):
         if self.ftp_router.running:
             return False
         self.ftp_router.update_settings(asset_ip, asset_port, honeypot_ip,
-                                        honeypot_port, fake_asset_port)
+                                        honeypot_port, fake_asset_port,
+                                        max_syns_allowed)
         ftp_conf.update_settings(asset_ip, asset_port, honeypot_ip,
-                                 honeypot_port, fake_asset_port)
+                                 honeypot_port, fake_asset_port,
+                                 max_syns_allowed)
         return True
 
-    @pyqtSlot(str, int, str, int, int, str, result=bool)
+    @pyqtSlot(str, int, str, int, int, str, int, result=bool)
     def update_http_settings(self, asset_ip, asset_port, honeypot_ip,
-                             honeypot_port, fake_asset_port, asset_db_path):
+                             honeypot_port, fake_asset_port,
+                             asset_db_path, max_syns_allowed):
         """
         Updates the HTTP settings
 
@@ -112,22 +106,13 @@ class MainWindow(QObject):
         if self.http_router.running:
             return False
         self.http_router.update_settings(asset_ip, asset_port, honeypot_ip,
-                                         honeypot_port, fake_asset_port)
+                                         honeypot_port, fake_asset_port,
+                                         max_syns_allowed)
         http_conf.update_settings(asset_ip, asset_port, honeypot_ip,
                                   honeypot_port, fake_asset_port,
-                                  asset_db_path)
+                                  asset_db_path, max_syns_allowed)
         database.asset_db_path = asset_db_path
         return True
-
-    @pyqtSlot(result=QVariant)
-    def load_general_settings(self):
-        """
-        Loads the default general settings to the GUI
-
-        Returns:
-            QVariant: List of general settings
-        """
-        return QVariant(general_conf.get_settings())
 
     @pyqtSlot(result=QVariant)
     def load_http_settings(self):

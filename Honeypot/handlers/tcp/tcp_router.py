@@ -20,7 +20,8 @@ class TCPRouter(ABC):
     Basic router structure to inherit from
     """
     def __init__(self, asset_ip, asset_port,
-                 honeypot_ip, honeypot_port, fake_asset_port):
+                 honeypot_ip, honeypot_port,
+                 fake_asset_port, max_syns_allowed):
 
         self.asset_ip = asset_ip
         self.asset_port = asset_port
@@ -34,7 +35,7 @@ class TCPRouter(ABC):
 
         self.requests_to_handle = queue.Queue()
         self.blacklist = Blacklist()
-        self.syns = SynHandler()
+        self.syns = SynHandler(max_syns_allowed)
         self.logger = Logger("TCP Router").get_logger()
 
     @property
@@ -100,9 +101,8 @@ class TCPRouter(ABC):
                 self.syns.register_ack(packet.src_addr)
 
             if self.syns.is_syn_flooding(packet.src_addr):
-                self.logger.warning(f"DOS attack (SYN flood) detected from {packet.src_addr}:{packet.src_port}. Pausing router...")
-                time.sleep(30)
-                self.logger.info("The router has been resumed")
+                self.logger.warning(f"DOS attack (SYN flood) detected from {packet.src_addr}:{packet.src_port}.")
+                self.block_syn_flood(packet.src_addr)
 
     @abstractmethod
     def requests_handler(self):
@@ -119,6 +119,26 @@ class TCPRouter(ABC):
     @abstractmethod
     def handle_fin_packet(self, packet: pydivert.Packet):
         pass
+
+    def block_syn_flood(self, src_addr):
+        """
+        Starts a new thread to handle SYN Flood attack -
+        Receives those SYN packets at a high priority and prevents
+        overflow of main handle.
+
+        Args:
+            src_addr (str): IP address
+        """
+        def receive_syns(src_addr):
+            fltr = f"ip.SrcAddr == {src_addr} and tcp.Syn and tcp.DstPort == {self.fake_port} and inbound"
+            handle_priority = -1
+            w = pydivert.WinDivert(fltr, priority=handle_priority)
+            w.open()
+            time.sleep(30)
+            w.close()
+
+        t = threading.Thread(target=receive_syns, args=(src_addr,))
+        t.start()
 
     def add_attack(self, src_addr, src_port, packet, description):
         """
@@ -148,9 +168,11 @@ class TCPRouter(ABC):
             self.logger.info(f"{ip_addr} has been added to blacklist")
 
     def update_settings(self, asset_ip, asset_port,
-                        honeypot_ip, honeypot_port, fake_asset_port):
+                        honeypot_ip, honeypot_port,
+                        fake_asset_port, max_syns_allowed):
         self.asset_ip = asset_ip
         self.asset_port = asset_port
         self.honeypot_ip = honeypot_ip
         self.honeypot_port = honeypot_port
         self.fake_port = fake_asset_port
+        self.syns.max_syns_allowed = max_syns_allowed

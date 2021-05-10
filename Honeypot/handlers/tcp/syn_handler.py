@@ -1,14 +1,10 @@
-from ..config import general_conf
-
-
 class SynHandler:
     """
     Keeps track of SYN packets from different IP addresses.
     """
-    max_syns_allowed = general_conf.max_syns_allowed
-
-    def __init__(self):
+    def __init__(self, max_syns_allowed):
         self.ips = {}
+        self.max_syns_allowed = max_syns_allowed
 
     def register_syn(self, ip_addr: str):
         if ip_addr in self.ips:

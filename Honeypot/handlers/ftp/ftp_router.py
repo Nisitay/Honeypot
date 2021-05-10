@@ -3,7 +3,7 @@ import pydivert
 import queue
 from dataclasses import dataclass
 
-from .. import database, Logger
+from .. import Logger
 from ..tcp import TCPRouter, TCPSession, ClientAddr
 from .ftp_proxy import FTPProxy
 
@@ -53,8 +53,7 @@ class FTPRouter(TCPRouter):
 
     def requests_handler(self):
         """
-        registers incoming packets, and handles the HTTP
-        requests once they are finished.
+        Handles FTP requests
         """
         while self._running.is_set():
             packet = self.requests_to_handle.get()
@@ -70,11 +69,11 @@ class FTPRouter(TCPRouter):
             if command == b"PASS":
                 responses = self.sessions[client_addr].ftp_server.send_cmd(packet.payload)
                 if src_ip not in self.blacklist and arg in self.whitelist_passwords:
-                    self.logger.info(f"Detected legit user from IP {src_ip}.")
+                    self.logger.info(f"Detected legit user from {src_ip}:{packet.src_port}.")
                     if self.sessions[client_addr].ftp_server.connected_to_honeypot:
                         self.sessions[client_addr].ftp_server.convert_server(to_asset=True)
                 else:  # attacker, convert him to the ftp honeypot
-                    self.logger.info(f"Detected suspicious user from IP {src_ip}.")
+                    self.logger.info(f"Detected suspicious user from {src_ip}:{packet.src_port}.")
                     self.add_to_blacklist(src_ip)
                     desc = "Used unpermitted password to use FTP server."
                     syn = self.sessions[client_addr].syn_packet
@@ -99,8 +98,15 @@ class FTPRouter(TCPRouter):
                 responses = ftp_server.send_cmd(packet.payload)
                 if command in self.data_channel_commands:
                     self.sessions[client_addr].data_commands.put(command)
-                if src_ip in self.blacklist:
-                    self.logger.info(f"Attacker from IP address {src_ip} has tried to run a {command} command.")
+
+                if ftp_server.connected_to_honeypot:
+                    cmd_convert = {
+                        b"NLST": "ls",
+                        b"LIST": "dir",
+                        b"RETR": "get",
+                        b"STOR": "put",
+                    }
+                    self.logger.info(f"Attacker from IP {src_ip} ran '{cmd_convert[command]}' command.")
 
             self.sessions[client_addr].tcp_session.sendall(responses)
 

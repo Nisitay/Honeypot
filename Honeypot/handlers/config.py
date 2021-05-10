@@ -42,33 +42,20 @@ class Config:
             config.write(configfile)
 
 
-class GeneralConfig(Config):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def update_settings(self, max_syns_allowed):
-        self.max_syns_allowed = max_syns_allowed
-        self.update_file()
-
-    def get_settings(self):
-        return [
-            self.max_syns_allowed
-        ]
-
-
 class HTTPConfig(Config):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
     def update_settings(self, asset_ip, asset_port,
                         honeypot_ip, honeypot_port,
-                        fake_asset_port, asset_db_path):
+                        fake_asset_port, asset_db_path, max_syns_allowed):
         self.asset_ip = asset_ip
         self.asset_port = asset_port
         self.honeypot_ip = honeypot_ip
         self.honeypot_port = honeypot_port
         self.fake_asset_port = fake_asset_port
         self.asset_database_path = asset_db_path
+        self.max_syns_allowed = max_syns_allowed
         self.update_file()
 
     def get_settings(self):
@@ -78,7 +65,8 @@ class HTTPConfig(Config):
             self.asset_port,
             self.honeypot_port,
             self.fake_asset_port,
-            self.asset_database_path
+            self.asset_database_path,
+            self.max_syns_allowed
         ]
 
 
@@ -88,12 +76,13 @@ class FTPConfig(Config):
 
     def update_settings(self, asset_ip, asset_port,
                         honeypot_ip, honeypot_port,
-                        fake_asset_port):
+                        fake_asset_port, max_syns_allowed):
         self.asset_ip = asset_ip
         self.asset_port = asset_port
         self.honeypot_ip = honeypot_ip
         self.honeypot_port = honeypot_port
         self.fake_asset_port = fake_asset_port
+        self.max_syns_allowed = max_syns_allowed
         self.update_file()
 
     def get_settings(self):
@@ -102,12 +91,12 @@ class FTPConfig(Config):
             self.honeypot_ip,
             self.asset_port,
             self.honeypot_port,
-            self.fake_asset_port
+            self.fake_asset_port,
+            self.max_syns_allowed
         ]
 
 
 config = ConfigParser()
 config.read(CONFIG_PATH)
-general_conf = GeneralConfig(config["general"])
 ftp_conf = FTPConfig(config["ftp"])
 http_conf = HTTPConfig(config["http"])

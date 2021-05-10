@@ -35,7 +35,7 @@ def p0f(packet):
     probable operating system of the packet source, based on various fields.
 
     Args:
-        packet (scapy.Packet or pydivert.Packet): TCP/IP Scapy packet
+        packet (scapy.Packet or pydivert.Packet): TCP/IP packet
 
     Returns:
         str: Matched OS

@@ -7,8 +7,26 @@ if ((Get-WindowsOptionalFeature -FeatureName $FeatureName -Online).State -eq "Di
 # Import administration module
 Import-Module WebAdministration
 
-# Create a new FTP site
-$FTPSiteName = 'Automated FTP Site'
+# Set new FTP site parameters
+$FTPSiteName = 'FTP Site'
+$FTPPort = 21
+
+# Create FTP root directory if doesn't exist already
+$FTPRootDir = $PSScriptRoot + "\FTP-Folder"
+if (!(Test-Path $FTPRootDir -PathType Container)) {
+    New-Item -ItemType Directory -Force -Path $FTPRootDir
+}
+
+# Add access rules to folder, for IUSR users
+$accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("NT AUTHORITY\IUSR", "Write, ReadAndExecute, Synchronize", "ContainerInherit, ObjectInherit", "None", "Allow")
+$acl = Get-ACL $FTPRootDir
+$acl.AddAccessRule($accessRule)
+Set-ACL -Path $FTPRootDir -ACLObject $acl
+
+# Create the new FTP site
+New-WebFtpSite -Name $FTPSiteName -Port $FTPPort -PhysicalPath $FTPRootDir
+
+# Add anonymous authentication
 $FTPSitePath = "IIS:\Sites\$FTPSiteName"
 $BasicAuth = 'ftpServer.security.authentication.anonymousAuthentication.enabled'
 Set-ItemProperty -Path $FTPSitePath -Name $BasicAuth -Value $True
@@ -20,7 +38,7 @@ $Param = @{
         accessType  = "Allow"
         roles       = ""
         permissions = "Read,Write"
-        users       = "Anonymous Users"
+        users       = "?"
     }
     PSPath   = 'IIS:\'
     Location = $FTPSiteName

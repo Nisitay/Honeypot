@@ -1,0 +1,1 @@
+PowerShell Start-Process PowerShell -ArgumentList '-File %cd%\create-server.ps1' -Verb RunAs -windowstyle hidden
